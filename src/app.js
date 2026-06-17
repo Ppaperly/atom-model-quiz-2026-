@@ -4,11 +4,13 @@ import { compressImage } from "./image-utils.js";
 import { completeSession, createSession, getSettings, listFeedback, listSubmissions, saveFeedback, saveSettings, saveSubmission } from "./firebase-service.js";
 
 const ADMIN_PASSWORD = "hy3932662";
+const ADMIN_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+let adminLogoutTimer = null;
 const FIELD_LABELS = { atomicNumber: "원소 번호", name: "이름", symbol: "기호", protons: "양성자 수", neutrons: "중성자 수", electrons: "전자 수" };
 const state = { profile: null, sessionId: null, questions: [], currentIndex: 0, settings: { answerRevealEnabled: false, elementSearchEnabled: false }, submissions: [], feedback: [] };
 const views = { start: document.querySelector("#studentStartView"), quiz: document.querySelector("#quizView"), results: document.querySelector("#resultsView"), search: document.querySelector("#searchView"), admin: document.querySelector("#adminView") };
 const messageBox = document.querySelector("#messageBox");
-document.querySelector("#adminOpenButton").addEventListener("click", () => { if (localStorage.getItem("atomQuizAdminUnlocked") === "true") { renderAdminDashboard(); return; } renderAdminLogin(); });
+document.querySelector("#adminOpenButton").addEventListener("click", () => { if (isAdminUnlocked()) { renderAdminDashboard(); return; } renderAdminLogin(); });
 init();
 
 async function init() { await refreshSettings(); renderStart(); }
@@ -17,6 +19,10 @@ function showMessage(message, isError = false) { messageBox.textContent = messag
 async function refreshSettings() { try { state.settings = await getSettings(); } catch (error) { showMessage(`설정 불러오기 실패: ${error.message}`, true); } }
 function clean(value) { return String(value ?? "").trim(); }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]); }
+function isAdminUnlocked() { const unlocked = localStorage.getItem("atomQuizAdminUnlocked") === "true"; const unlockedAt = Number(localStorage.getItem("atomQuizAdminUnlockedAt") || 0); if (!unlocked || !unlockedAt || Date.now() - unlockedAt > ADMIN_SESSION_TIMEOUT_MS) { logoutAdmin(); return false; } return true; }
+function unlockAdmin() { localStorage.setItem("atomQuizAdminUnlocked", "true"); localStorage.setItem("atomQuizAdminUnlockedAt", String(Date.now())); scheduleAdminLogout(); }
+function scheduleAdminLogout() { clearTimeout(adminLogoutTimer); adminLogoutTimer = setTimeout(logoutAdmin, ADMIN_SESSION_TIMEOUT_MS); }
+function logoutAdmin() { clearTimeout(adminLogoutTimer); localStorage.removeItem("atomQuizAdminUnlocked"); localStorage.removeItem("atomQuizAdminUnlockedAt"); if (views.admin.classList.contains("active-view")) { renderAdminLogin(); showMessage("관리자 접속 시간이 지나 자동 로그아웃되었습니다.", true); } }
 
 function renderStart() {
   views.start.innerHTML = `<section class="panel stack"><div><h2>학생 정보 입력</h2><p class="muted">학년, 반, 조, 번호, 이름을 입력한 뒤 시작하세요.</p></div><form id="startForm" class="stack"><div class="form-grid"><label>학년 <input name="gradeName" required placeholder="예: 1학년" /></label><label>반 <input name="className" required placeholder="예: 1반" /></label><label>조 <input name="teamName" required placeholder="예: 3조" /></label><label>번호 <input name="studentNumber" inputmode="numeric" required placeholder="예: 12" /></label><label>이름 <input name="studentName" required placeholder="예: 홍길동" /></label></div><div class="actions"><button type="submit">게임 시작</button>${state.settings.elementSearchEnabled ? `<button id="openSearchButton" class="secondary-button" type="button">원소 검색</button>` : ""}</div></form></section>`;
@@ -44,10 +50,7 @@ function renderQuiz() {
   showView("quiz");
 }
 
-function renderQuestionTable(element, blankFields) {
-  return `<div class="table-wrap"><table><thead><tr><th>항목</th><th>정보</th></tr></thead><tbody>${["atomicNumber", "name", "symbol", "protons", "neutrons", "electrons"].map((field) => `<tr><th>${FIELD_LABELS[field]}</th><td>${blankFields.includes(field) ? `<input name="${field}" required aria-label="${FIELD_LABELS[field]} 입력" />` : escapeHtml(element[field])}</td></tr>`).join("")}</tbody></table></div>`;
-}
-
+function renderQuestionTable(element, blankFields) { return `<div class="table-wrap"><table><thead><tr><th>항목</th><th>정보</th></tr></thead><tbody>${["atomicNumber", "name", "symbol", "protons", "neutrons", "electrons"].map((field) => `<tr><th>${FIELD_LABELS[field]}</th><td>${blankFields.includes(field) ? `<input name="${field}" required aria-label="${FIELD_LABELS[field]} 입력" />` : escapeHtml(element[field])}</td></tr>`).join("")}</tbody></table></div>`; }
 function previewImage(event) { const file = event.currentTarget.files[0]; const preview = views.quiz.querySelector("#imagePreview"); if (!file) return; preview.src = URL.createObjectURL(file); preview.hidden = false; }
 async function handleQuestionSubmit(event) {
   event.preventDefault();
@@ -106,14 +109,11 @@ function renderSearch() {
 }
 function renderSearchResults(keyword) { const normalized = clean(keyword).toLowerCase(); const results = getSearchPool().filter((element) => !normalized || String(element.atomicNumber).includes(normalized) || element.name.toLowerCase().includes(normalized) || element.symbol.toLowerCase().includes(normalized)); views.search.querySelector("#searchResults").innerHTML = results.map((element) => `<article class="card stack">${renderCorrectAnswer(element)}</article>`).join(""); }
 
-function renderAdminLogin() {
-  views.admin.innerHTML = `<section class="panel stack"><h2>관리자 접속</h2><form id="adminLoginForm" class="stack"><label>비밀번호 <input name="password" type="password" required /></label><div class="actions"><button type="submit">접속</button><button id="cancelAdminButton" class="secondary-button" type="button">취소</button></div></form></section>`;
-  views.admin.querySelector("#adminLoginForm").addEventListener("submit", handleAdminLogin);
-  views.admin.querySelector("#cancelAdminButton").addEventListener("click", renderStart);
-  showView("admin");
-}
-async function handleAdminLogin(event) { event.preventDefault(); if (new FormData(event.currentTarget).get("password") !== ADMIN_PASSWORD) return showMessage("관리자 비밀번호가 맞지 않습니다.", true); localStorage.setItem("atomQuizAdminUnlocked", "true"); await renderAdminDashboard(); }
+function renderAdminLogin() { views.admin.innerHTML = `<section class="panel stack"><h2>관리자 접속</h2><form id="adminLoginForm" class="stack"><label>비밀번호 <input name="password" type="password" required /></label><div class="actions"><button type="submit">접속</button><button id="cancelAdminButton" class="secondary-button" type="button">취소</button></div></form></section>`; views.admin.querySelector("#adminLoginForm").addEventListener("submit", handleAdminLogin); views.admin.querySelector("#cancelAdminButton").addEventListener("click", renderStart); showView("admin"); }
+async function handleAdminLogin(event) { event.preventDefault(); if (new FormData(event.currentTarget).get("password") !== ADMIN_PASSWORD) return showMessage("관리자 비밀번호가 맞지 않습니다.", true); unlockAdmin(); await renderAdminDashboard(); }
 async function renderAdminDashboard() {
+  if (!isAdminUnlocked()) return;
+  scheduleAdminLogout();
   await refreshSettings(); await refreshClassData();
   views.admin.innerHTML = `<section class="panel stack"><div><h2>관리자 화면</h2><p class="muted">정답 확인과 원소 검색을 수업 단계에 맞게 열고 닫을 수 있습니다.</p></div><div class="grid"><label class="switch-row">정답 확인 허용 <input id="answerToggle" type="checkbox" ${state.settings.answerRevealEnabled ? "checked" : ""} /></label><label class="switch-row">원소 검색 허용 <input id="searchToggle" type="checkbox" ${state.settings.elementSearchEnabled ? "checked" : ""} /></label></div><div class="form-grid"><label>학년/반/조/학생 검색 <input id="adminFilter" placeholder="예: 1학년, 1반, 3조, 홍길동" /></label></div><div id="adminSubmissionList" class="result-grid"></div></section>`;
   views.admin.querySelector("#answerToggle").addEventListener("change", handleSettingChange);
@@ -121,5 +121,5 @@ async function renderAdminDashboard() {
   views.admin.querySelector("#adminFilter").addEventListener("input", renderAdminSubmissionList);
   renderAdminSubmissionList(); showView("admin");
 }
-async function handleSettingChange() { const nextSettings = { answerRevealEnabled: views.admin.querySelector("#answerToggle").checked, elementSearchEnabled: views.admin.querySelector("#searchToggle").checked }; try { await saveSettings(nextSettings); state.settings = nextSettings; showMessage("관리자 설정을 저장했습니다."); } catch (error) { showMessage(`설정 저장 실패: ${error.message}`, true); } }
+async function handleSettingChange() { const nextSettings = { answerRevealEnabled: views.admin.querySelector("#answerToggle").checked, elementSearchEnabled: views.admin.querySelector("#searchToggle").checked }; try { await saveSettings(nextSettings); state.settings = nextSettings; scheduleAdminLogout(); showMessage("관리자 설정을 저장했습니다."); } catch (error) { showMessage(`설정 저장 실패: ${error.message}`, true); } }
 function renderAdminSubmissionList() { const keyword = clean(views.admin.querySelector("#adminFilter")?.value).toLowerCase(); const submissions = state.submissions.filter((item) => !keyword || `${item.gradeName || ""} ${item.className} ${item.teamName} ${item.studentNumber} ${item.studentName}`.toLowerCase().includes(keyword)); views.admin.querySelector("#adminSubmissionList").innerHTML = submissions.length ? submissions.map((item) => renderSubmissionCard(item, true)).join("") : `<p class="muted">조건에 맞는 제출물이 없습니다.</p>`; }
