@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>원자 모형 퀴즈</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">공개수업 활동</p>
+          <h1>원자 모형 퀴즈</h1>
+        </div>
+        <button id="adminOpenButton" class="ghost-button" type="button">관리자</button>
+      </header>
+
+      <section id="messageBox" class="message-box" aria-live="polite"></section>
+      <section id="studentStartView" class="view active-view"></section>
+      <section id="quizView" class="view"></section>
+      <section id="resultsView" class="view"></section>
+      <section id="searchView" class="view"></section>
+      <section id="adminView" class="view"></section>
+    </main>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
