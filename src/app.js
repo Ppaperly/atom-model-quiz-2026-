@@ -8,7 +8,7 @@ const ADMIN_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 let adminLogoutTimer = null;
 const FIELD_LABELS = { atomicNumber: "원소 번호", name: "이름", symbol: "기호", protons: "양성자 수", neutrons: "중성자 수", electrons: "전자 수" };
 const state = { profile: null, sessionId: null, questions: [], currentIndex: 0, settings: { answerRevealEnabled: false, elementSearchEnabled: false }, submissions: [], feedback: [] };
-const drawingState = { canvas: null, context: null, drawing: false, color: "#272338", width: 5, hasInk: false };
+const drawingState = { canvas: null, context: null, drawing: false, color: "#272338", width: 5, hasInk: false, pointers: new Map(), zoom: 1, panX: 0, panY: 0, lastGesture: null };
 const views = { start: document.querySelector("#studentStartView"), quiz: document.querySelector("#quizView"), results: document.querySelector("#resultsView"), search: document.querySelector("#searchView"), admin: document.querySelector("#adminView") };
 const messageBox = document.querySelector("#messageBox");
 document.querySelector("#adminOpenButton").addEventListener("click", () => { if (isAdminUnlocked()) { renderAdminDashboard(); return; } renderAdminLogin(); });
@@ -45,7 +45,7 @@ async function handleStart(event) {
 
 function renderQuiz() {
   const question = state.questions[state.currentIndex];
-  views.quiz.innerHTML = `<section class="panel stack"><div><p class="quiz-status">${state.currentIndex + 1} / ${state.questions.length} 문제</p><h2>제시된 정보를 보고 원자 모형을 그려보세요</h2></div><form id="quizForm" class="stack">${renderQuestionTable(question.element, question.blankFields)}<div class="drawing-panel stack"><div class="drawing-tools" aria-label="그리기 도구"><button class="tool-button active-tool" type="button" data-draw-color="#272338">검정</button><button class="tool-button" type="button" data-draw-color="#df6f92">전자</button><button class="tool-button" type="button" data-draw-color="#7fc4d8">양성자</button><button class="tool-button" type="button" data-draw-color="#d7c900">중성자</button><button class="tool-button secondary-button" type="button" data-eraser>지우개</button><label class="size-control">굵기 <input id="brushSize" type="range" min="2" max="18" value="5" /></label><button id="clearDrawingButton" class="secondary-button" type="button">전체 지우기</button></div><canvas id="drawingCanvas" class="drawing-canvas" width="900" height="640" aria-label="원자 모형 그림판"></canvas></div><div class="actions"><button type="submit">제출하고 다음으로</button></div></form></section>`;
+  views.quiz.innerHTML = `<section class="panel stack"><div><p class="quiz-status">${state.currentIndex + 1} / ${state.questions.length} 문제</p><h2>제시된 정보를 보고 원자 모형을 그려보세요</h2></div><form id="quizForm" class="stack">${renderQuestionTable(question.element, question.blankFields)}<div class="drawing-panel stack"><div class="drawing-tools" aria-label="그리기 도구"><button class="tool-button active-tool" type="button" data-draw-color="#272338">검정</button><button class="tool-button" type="button" data-draw-color="#df6f92">전자</button><button class="tool-button" type="button" data-draw-color="#7fc4d8">양성자</button><button class="tool-button" type="button" data-draw-color="#d7c900">중성자</button><button class="tool-button secondary-button" type="button" data-eraser>지우개</button><label class="size-control">굵기 <input id="brushSize" type="range" min="2" max="18" value="5" /></label><button id="clearDrawingButton" class="secondary-button" type="button">전체 지우기</button><button id="fullscreenDrawingButton" class="secondary-button" type="button">전체화면</button></div><div class="drawing-board"><canvas id="drawingCanvas" class="drawing-canvas" width="900" height="640" aria-label="원자 모형 그림판"></canvas></div></div><div class="actions"><button type="submit">제출하고 다음으로</button></div></form></section>`;
   initDrawingCanvas();
   views.quiz.querySelector("#quizForm").addEventListener("submit", handleQuestionSubmit);
   showView("quiz");
@@ -61,6 +61,11 @@ function initDrawingCanvas() {
   drawingState.color = "#272338";
   drawingState.width = 5;
   drawingState.hasInk = false;
+  drawingState.pointers = new Map();
+  drawingState.zoom = 1;
+  drawingState.panX = 0;
+  drawingState.panY = 0;
+  drawingState.lastGesture = null;
   context.fillStyle = "#fff";
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.lineCap = "round";
@@ -75,6 +80,9 @@ function initDrawingCanvas() {
   views.quiz.querySelector("[data-eraser]").addEventListener("click", (event) => setDrawingTool(event.currentTarget, "#fff", true));
   views.quiz.querySelector("#brushSize").addEventListener("input", (event) => { drawingState.width = Number(event.currentTarget.value); });
   views.quiz.querySelector("#clearDrawingButton").addEventListener("click", clearDrawing);
+  views.quiz.querySelector("#fullscreenDrawingButton").addEventListener("click", toggleDrawingFullscreen);
+  document.addEventListener("keydown", handleDrawingKeydown);
+  updateCanvasTransform();
 }
 function setDrawingTool(button, color, isEraser) {
   drawingState.color = color;
@@ -88,13 +96,26 @@ function canvasPoint(event) {
 }
 function startDrawing(event) {
   event.preventDefault();
-  drawingState.canvas.setPointerCapture(event.pointerId);
+  drawingState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  drawingState.canvas.setPointerCapture?.(event.pointerId);
+  if (drawingState.pointers.size > 1) {
+    drawingState.drawing = false;
+    drawingState.context.closePath();
+    drawingState.lastGesture = getGesture();
+    return;
+  }
   const point = canvasPoint(event);
   drawingState.context.beginPath();
   drawingState.context.moveTo(point.x, point.y);
   drawingState.drawing = true;
 }
 function drawOnCanvas(event) {
+  if (drawingState.pointers.has(event.pointerId)) drawingState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (drawingState.pointers.size > 1) {
+    event.preventDefault();
+    updateZoomGesture();
+    return;
+  }
   if (!drawingState.drawing) return;
   event.preventDefault();
   const point = canvasPoint(event);
@@ -104,15 +125,74 @@ function drawOnCanvas(event) {
   drawingState.context.stroke();
   if (drawingState.color !== "#fff") drawingState.hasInk = true;
 }
-function stopDrawing() {
+function stopDrawing(event) {
+  if (event) {
+    drawingState.pointers.delete(event.pointerId);
+    drawingState.canvas.releasePointerCapture?.(event.pointerId);
+  }
   if (!drawingState.drawing) return;
   drawingState.context.closePath();
   drawingState.drawing = false;
+  drawingState.lastGesture = null;
 }
 function clearDrawing() {
   drawingState.context.fillStyle = "#fff";
   drawingState.context.fillRect(0, 0, drawingState.canvas.width, drawingState.canvas.height);
   drawingState.hasInk = false;
+}
+function toggleDrawingFullscreen() {
+  const panel = views.quiz.querySelector(".drawing-panel");
+  const button = views.quiz.querySelector("#fullscreenDrawingButton");
+  const isFullscreen = panel.classList.toggle("fullscreen-drawing");
+  button.textContent = isFullscreen ? "닫기" : "전체화면";
+  document.body.classList.toggle("drawing-fullscreen-open", isFullscreen);
+  resetDrawingView();
+}
+function handleDrawingKeydown(event) {
+  if (event.key !== "Escape") return;
+  const panel = views.quiz?.querySelector(".drawing-panel.fullscreen-drawing");
+  if (!panel) return;
+  panel.classList.remove("fullscreen-drawing");
+  views.quiz.querySelector("#fullscreenDrawingButton").textContent = "전체화면";
+  document.body.classList.remove("drawing-fullscreen-open");
+  resetDrawingView();
+}
+function resetDrawingView() {
+  drawingState.zoom = 1;
+  drawingState.panX = 0;
+  drawingState.panY = 0;
+  drawingState.lastGesture = null;
+  updateCanvasTransform();
+}
+function updateCanvasTransform() {
+  if (!drawingState.canvas) return;
+  drawingState.canvas.style.transform = `translate(${drawingState.panX}px, ${drawingState.panY}px) scale(${drawingState.zoom})`;
+}
+function getGesture() {
+  const points = [...drawingState.pointers.values()];
+  if (points.length < 2) return null;
+  const [first, second] = points;
+  return {
+    distance: Math.hypot(second.x - first.x, second.y - first.y),
+    centerX: (first.x + second.x) / 2,
+    centerY: (first.y + second.y) / 2,
+    zoom: drawingState.zoom,
+    panX: drawingState.panX,
+    panY: drawingState.panY
+  };
+}
+function updateZoomGesture() {
+  const gesture = getGesture();
+  if (!gesture) return;
+  if (!drawingState.lastGesture) {
+    drawingState.lastGesture = gesture;
+    return;
+  }
+  const nextZoom = Math.min(4, Math.max(1, drawingState.lastGesture.zoom * (gesture.distance / drawingState.lastGesture.distance)));
+  drawingState.zoom = nextZoom;
+  drawingState.panX = drawingState.lastGesture.panX + (gesture.centerX - drawingState.lastGesture.centerX);
+  drawingState.panY = drawingState.lastGesture.panY + (gesture.centerY - drawingState.lastGesture.centerY);
+  updateCanvasTransform();
 }
 function confirmPolishDrawing() {
   return window.confirm("그림을 보기 좋게 다듬어드릴까요?\n내용은 바꾸지 않고 선과 표시만 정리합니다.");
