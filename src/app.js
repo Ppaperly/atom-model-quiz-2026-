@@ -45,7 +45,7 @@ async function handleStart(event) {
 
 function renderQuiz() {
   const question = state.questions[state.currentIndex];
-  views.quiz.innerHTML = `<section class="panel stack"><div><p class="quiz-status">${state.currentIndex + 1} / ${state.questions.length} 문제</p><h2>제시된 정보를 보고 원자 모형을 그려보세요</h2></div><form id="quizForm" class="stack">${renderQuestionTable(question.element, question.blankFields)}<div class="drawing-panel stack"><div class="drawing-tools" aria-label="그리기 도구"><button class="tool-button active-tool" type="button" data-draw-color="#272338">검정</button><button class="tool-button" type="button" data-draw-color="#df6f92">전자</button><button class="tool-button" type="button" data-draw-color="#7fc4d8">양성자</button><button class="tool-button" type="button" data-draw-color="#d7c900">중성자</button><button class="tool-button secondary-button" type="button" data-eraser>지우개</button><label class="size-control">굵기 <input id="brushSize" type="range" min="2" max="18" value="5" /></label><button id="clearDrawingButton" class="secondary-button" type="button">전체 지우기</button><button id="fullscreenDrawingButton" class="secondary-button" type="button">전체화면</button></div><div class="drawing-board"><canvas id="drawingCanvas" class="drawing-canvas" width="900" height="640" aria-label="원자 모형 그림판"></canvas></div></div><div class="actions"><button type="submit">제출하고 다음으로</button></div></form></section>`;
+  views.quiz.innerHTML = `<section class="panel stack"><div><p class="quiz-status">${state.currentIndex + 1} / ${state.questions.length} 문제</p><h2>제시된 정보를 보고 원자 모형을 그려보세요</h2></div><form id="quizForm" class="stack">${renderQuestionTable(question.element, question.blankFields)}<div class="drawing-panel stack"><div class="drawing-tools" aria-label="그리기 도구"><button class="tool-button active-tool" type="button" data-draw-color="#272338">검정</button><button class="tool-button" type="button" data-draw-color="#df6f92">전자</button><button class="tool-button" type="button" data-draw-color="#7fc4d8">양성자</button><button class="tool-button" type="button" data-draw-color="#d7c900">중성자</button><button class="tool-button secondary-button" type="button" data-eraser>지우개</button><label class="size-control">굵기 <input id="brushSize" type="range" min="2" max="18" value="5" /></label><button id="clearDrawingButton" class="secondary-button" type="button">전체 지우기</button><button id="fullscreenDrawingButton" class="secondary-button" type="button">전체화면</button></div><div class="drawing-board"><canvas id="drawingCanvas" class="drawing-canvas" width="900" height="900" aria-label="원자 모형 그림판"></canvas></div></div><div class="actions"><button type="submit">제출하고 다음으로</button></div></form></section>`;
   initDrawingCanvas();
   views.quiz.querySelector("#quizForm").addEventListener("submit", handleQuestionSubmit);
   showView("quiz");
@@ -130,10 +130,10 @@ function stopDrawing(event) {
     drawingState.pointers.delete(event.pointerId);
     drawingState.canvas.releasePointerCapture?.(event.pointerId);
   }
+  if (drawingState.pointers.size < 2) drawingState.lastGesture = null;
   if (!drawingState.drawing) return;
   drawingState.context.closePath();
   drawingState.drawing = false;
-  drawingState.lastGesture = null;
 }
 function clearDrawing() {
   drawingState.context.fillStyle = "#fff";
