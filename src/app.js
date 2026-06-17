@@ -1,6 +1,6 @@
 import { createQuestion, findElementByAtomicNumber, getSearchPool, pickQuizElements } from "./elements.js";
 import { renderAtomSvg } from "./atom-renderer.js";
-import { compressImage } from "./image-utils.js";
+import { assertCompressedImageSize } from "./image-utils.js";
 import { completeSession, createSession, getSettings, listFeedback, listSubmissions, saveFeedback, saveSettings, saveSubmission } from "./firebase-service.js";
 
 const ADMIN_PASSWORD = "hy3932662";
@@ -8,6 +8,7 @@ const ADMIN_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 let adminLogoutTimer = null;
 const FIELD_LABELS = { atomicNumber: "원소 번호", name: "이름", symbol: "기호", protons: "양성자 수", neutrons: "중성자 수", electrons: "전자 수" };
 const state = { profile: null, sessionId: null, questions: [], currentIndex: 0, settings: { answerRevealEnabled: false, elementSearchEnabled: false }, submissions: [], feedback: [] };
+const drawingState = { canvas: null, context: null, drawing: false, color: "#272338", width: 5, hasInk: false };
 const views = { start: document.querySelector("#studentStartView"), quiz: document.querySelector("#quizView"), results: document.querySelector("#resultsView"), search: document.querySelector("#searchView"), admin: document.querySelector("#adminView") };
 const messageBox = document.querySelector("#messageBox");
 document.querySelector("#adminOpenButton").addEventListener("click", () => { if (isAdminUnlocked()) { renderAdminDashboard(); return; } renderAdminLogin(); });
@@ -44,14 +45,104 @@ async function handleStart(event) {
 
 function renderQuiz() {
   const question = state.questions[state.currentIndex];
-  views.quiz.innerHTML = `<section class="panel stack"><div><p class="quiz-status">${state.currentIndex + 1} / ${state.questions.length} 문제</p><h2>제시된 정보를 보고 원자 모형을 그려보세요</h2></div><form id="quizForm" class="stack">${renderQuestionTable(question.element, question.blankFields)}<label>직접 그린 원자 모형 사진 <input id="imageInput" name="image" type="file" accept="image/*" required /></label><img id="imagePreview" class="preview-image" alt="" hidden /><div class="actions"><button type="submit">제출하고 다음으로</button></div></form></section>`;
-  views.quiz.querySelector("#imageInput").addEventListener("change", previewImage);
+  views.quiz.innerHTML = `<section class="panel stack"><div><p class="quiz-status">${state.currentIndex + 1} / ${state.questions.length} 문제</p><h2>제시된 정보를 보고 원자 모형을 그려보세요</h2></div><form id="quizForm" class="stack">${renderQuestionTable(question.element, question.blankFields)}<div class="drawing-panel stack"><div class="drawing-tools" aria-label="그리기 도구"><button class="tool-button active-tool" type="button" data-draw-color="#272338">검정</button><button class="tool-button" type="button" data-draw-color="#df6f92">전자</button><button class="tool-button" type="button" data-draw-color="#7fc4d8">양성자</button><button class="tool-button" type="button" data-draw-color="#d7c900">중성자</button><button class="tool-button secondary-button" type="button" data-eraser>지우개</button><label class="size-control">굵기 <input id="brushSize" type="range" min="2" max="18" value="5" /></label><button id="clearDrawingButton" class="secondary-button" type="button">전체 지우기</button></div><canvas id="drawingCanvas" class="drawing-canvas" width="900" height="640" aria-label="원자 모형 그림판"></canvas></div><div class="actions"><button type="submit">제출하고 다음으로</button></div></form></section>`;
+  initDrawingCanvas();
   views.quiz.querySelector("#quizForm").addEventListener("submit", handleQuestionSubmit);
   showView("quiz");
 }
 
 function renderQuestionTable(element, blankFields) { return `<div class="table-wrap"><table><thead><tr><th>항목</th><th>정보</th></tr></thead><tbody>${["atomicNumber", "name", "symbol", "protons", "neutrons", "electrons"].map((field) => `<tr><th>${FIELD_LABELS[field]}</th><td>${blankFields.includes(field) ? `<input name="${field}" required aria-label="${FIELD_LABELS[field]} 입력" />` : escapeHtml(element[field])}</td></tr>`).join("")}</tbody></table></div>`; }
-function previewImage(event) { const file = event.currentTarget.files[0]; const preview = views.quiz.querySelector("#imagePreview"); if (!file) return; preview.src = URL.createObjectURL(file); preview.hidden = false; }
+function initDrawingCanvas() {
+  const canvas = views.quiz.querySelector("#drawingCanvas");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  drawingState.canvas = canvas;
+  drawingState.context = context;
+  drawingState.drawing = false;
+  drawingState.color = "#272338";
+  drawingState.width = 5;
+  drawingState.hasInk = false;
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.imageSmoothingEnabled = true;
+  canvas.addEventListener("pointerdown", startDrawing);
+  canvas.addEventListener("pointermove", drawOnCanvas);
+  canvas.addEventListener("pointerup", stopDrawing);
+  canvas.addEventListener("pointercancel", stopDrawing);
+  canvas.addEventListener("pointerleave", stopDrawing);
+  views.quiz.querySelectorAll("[data-draw-color]").forEach((button) => button.addEventListener("click", () => setDrawingTool(button, button.dataset.drawColor, false)));
+  views.quiz.querySelector("[data-eraser]").addEventListener("click", (event) => setDrawingTool(event.currentTarget, "#fff", true));
+  views.quiz.querySelector("#brushSize").addEventListener("input", (event) => { drawingState.width = Number(event.currentTarget.value); });
+  views.quiz.querySelector("#clearDrawingButton").addEventListener("click", clearDrawing);
+}
+function setDrawingTool(button, color, isEraser) {
+  drawingState.color = color;
+  drawingState.width = isEraser ? 22 : Number(views.quiz.querySelector("#brushSize").value);
+  views.quiz.querySelectorAll(".tool-button").forEach((item) => item.classList.remove("active-tool"));
+  button.classList.add("active-tool");
+}
+function canvasPoint(event) {
+  const rect = drawingState.canvas.getBoundingClientRect();
+  return { x: ((event.clientX - rect.left) / rect.width) * drawingState.canvas.width, y: ((event.clientY - rect.top) / rect.height) * drawingState.canvas.height };
+}
+function startDrawing(event) {
+  event.preventDefault();
+  drawingState.canvas.setPointerCapture(event.pointerId);
+  const point = canvasPoint(event);
+  drawingState.context.beginPath();
+  drawingState.context.moveTo(point.x, point.y);
+  drawingState.drawing = true;
+}
+function drawOnCanvas(event) {
+  if (!drawingState.drawing) return;
+  event.preventDefault();
+  const point = canvasPoint(event);
+  drawingState.context.strokeStyle = drawingState.color;
+  drawingState.context.lineWidth = drawingState.width;
+  drawingState.context.lineTo(point.x, point.y);
+  drawingState.context.stroke();
+  if (drawingState.color !== "#fff") drawingState.hasInk = true;
+}
+function stopDrawing() {
+  if (!drawingState.drawing) return;
+  drawingState.context.closePath();
+  drawingState.drawing = false;
+}
+function clearDrawing() {
+  drawingState.context.fillStyle = "#fff";
+  drawingState.context.fillRect(0, 0, drawingState.canvas.width, drawingState.canvas.height);
+  drawingState.hasInk = false;
+}
+function confirmPolishDrawing() {
+  return window.confirm("그림을 보기 좋게 다듬어드릴까요?\n내용은 바꾸지 않고 선과 표시만 정리합니다.");
+}
+function exportDrawingCanvas(polish) {
+  const source = drawingState.canvas;
+  const output = document.createElement("canvas");
+  output.width = source.width;
+  output.height = source.height;
+  const context = output.getContext("2d");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, output.width, output.height);
+  context.drawImage(source, 0, 0);
+  if (polish) polishDrawingPixels(context, output.width, output.height);
+  const imageData = output.toDataURL("image/jpeg", 0.82);
+  assertCompressedImageSize(imageData);
+  return imageData;
+}
+function polishDrawingPixels(context, width, height) {
+  const image = context.getImageData(0, 0, width, height);
+  const data = image.data;
+  for (let index = 0; index < data.length; index += 4) {
+    const isWhite = data[index] > 245 && data[index + 1] > 245 && data[index + 2] > 245;
+    if (isWhite) continue;
+    data[index] = Math.max(0, Math.round(data[index] * 0.78));
+    data[index + 1] = Math.max(0, Math.round(data[index + 1] * 0.78));
+    data[index + 2] = Math.max(0, Math.round(data[index + 2] * 0.78));
+  }
+  context.putImageData(image, 0, 0);
+}
 async function handleQuestionSubmit(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -59,9 +150,10 @@ async function handleQuestionSubmit(event) {
   const studentAnswers = {};
   question.blankFields.forEach((field) => { studentAnswers[field] = clean(form.get(field)); });
   if (Object.values(studentAnswers).some((value) => !value)) return showMessage("빈칸을 모두 입력해 주세요.", true);
+  if (!drawingState.hasInk) return showMessage("원자 모형을 그림판에 그려 주세요.", true);
   event.submitter.disabled = true; event.submitter.textContent = "저장 중...";
   try {
-    const imageData = await compressImage(form.get("image"));
+    const imageData = exportDrawingCanvas(confirmPolishDrawing());
     await saveSubmission({ sessionId: state.sessionId, ...state.profile, questionIndex: state.currentIndex + 1, elementNumber: question.element.atomicNumber, blankFields: question.blankFields, studentAnswers, imageData });
     state.currentIndex += 1;
     if (state.currentIndex < state.questions.length) renderQuiz(); else { await completeSession(state.sessionId); showMessage("3문제 제출이 완료되었습니다."); await renderResults("team"); }
@@ -130,14 +222,26 @@ async function handleSettingChange() { const nextSettings = { answerRevealEnable
 function renderAdminSubmissionList() {
   const keyword = clean(views.admin.querySelector("#adminFilter")?.value).toLowerCase();
   const submissions = state.submissions.filter((item) => !keyword || `${item.gradeName || ""} ${item.className} ${item.teamName} ${item.studentNumber} ${item.studentName}`.toLowerCase().includes(keyword));
-  views.admin.querySelector("#adminSubmissionList").innerHTML = submissions.length ? `<div class="table-wrap"><table><thead><tr><th>학생</th><th>학년/반</th><th>조</th><th>문제</th></tr></thead><tbody>${submissions.map((item) => `<tr><td><button class="secondary-button" type="button" data-admin-submission="${escapeHtml(item.id)}">${escapeHtml(item.studentNumber)}번 ${escapeHtml(item.studentName)}</button></td><td>${escapeHtml(item.gradeName || "학년 미입력")} ${escapeHtml(item.className)}</td><td>${escapeHtml(item.teamName)}</td><td>${escapeHtml(item.questionIndex)}번</td></tr>`).join("")}</tbody></table></div><div id="adminSubmissionDetail" class="stack"></div>` : `<p class="muted">조건에 맞는 제출물이 없습니다.</p>`;
+  const students = groupSubmissionsByStudent(submissions);
+  views.admin.querySelector("#adminSubmissionList").innerHTML = students.length ? `<div class="student-name-list">${students.map((student) => `<button class="student-name-button secondary-button" type="button" data-admin-student="${escapeHtml(student.key)}">${escapeHtml(student.name)}</button>`).join("")}</div><div id="adminSubmissionDetail" class="stack"></div>` : `<p class="muted">조건에 맞는 제출물이 없습니다.</p>`;
+}
+function groupSubmissionsByStudent(submissions) {
+  const groups = new Map();
+  submissions.forEach((item) => {
+    const key = [item.gradeName || "", item.className || "", item.teamName || "", item.studentNumber || "", item.studentName || ""].join("|");
+    if (!groups.has(key)) {
+      groups.set(key, { key, name: item.studentName || "이름 미입력", submissions: [] });
+    }
+    groups.get(key).submissions.push(item);
+  });
+  return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name, "ko"));
 }
 function handleAdminSubmissionClick(event) {
-  const button = event.target.closest("[data-admin-submission]");
+  const button = event.target.closest("[data-admin-student]");
   if (!button) return;
-  const submission = state.submissions.find((item) => item.id === button.dataset.adminSubmission);
+  const studentSubmissions = groupSubmissionsByStudent(state.submissions).find((item) => item.key === button.dataset.adminStudent)?.submissions || [];
   const detail = views.admin.querySelector("#adminSubmissionDetail");
-  if (!submission || !detail) return;
-  detail.innerHTML = renderSubmissionCard(submission, true);
+  if (!studentSubmissions.length || !detail) return;
+  detail.innerHTML = `<div class="stack">${studentSubmissions.sort((a, b) => Number(a.questionIndex) - Number(b.questionIndex)).map((submission) => renderSubmissionCard(submission, true)).join("")}</div>`;
   scheduleAdminLogout();
 }
