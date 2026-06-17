@@ -33,7 +33,7 @@ function drawElectrons(count, radius, centerX, centerY) {
   return Array.from({ length: count }, (_, index) => {
     const angle = -90 + (360 / count) * index;
     const point = polarToPoint(centerX, centerY, radius, angle);
-    return `<g class="electron" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})"><circle r="13" fill="url(#electronGradient)" stroke="#cf5e82" stroke-width="1.2" /><text x="0" y="0" text-anchor="middle" dominant-baseline="central" class="particle-sign minus">-</text></g>`;
+    return `<g class="electron" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})"><circle r="13" fill="url(#electronGradient)" stroke="#cf5e82" stroke-width="1.2" /><text x="0" y="0" dy="-0.02em" text-anchor="middle" dominant-baseline="middle" alignment-baseline="middle" class="particle-sign minus">-</text></g>`;
   });
 }
 
@@ -45,7 +45,7 @@ function drawNucleus(protons, neutrons, centerX, centerY) {
   }).join("");
   const protonMarkup = Array.from({ length: protons }, (_, index) => {
     const point = nucleusPoint(index + neutrons, centerX, centerY);
-    return `<g class="proton" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})"><circle r="${radius}" fill="url(#protonGradient)" stroke="#69abc1" stroke-width="1" /><text x="0" y="0" text-anchor="middle" dominant-baseline="central" class="particle-sign plus">+</text></g>`;
+    return `<g class="proton" transform="translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})"><circle r="${radius}" fill="url(#protonGradient)" stroke="#69abc1" stroke-width="1" /><text x="0" y="0" dy="0.04em" text-anchor="middle" dominant-baseline="middle" alignment-baseline="middle" class="particle-sign plus">+</text></g>`;
   }).join("");
   return `<g class="neutrons">${neutronMarkup}</g><g class="protons">${protonMarkup}</g>`;
 }
