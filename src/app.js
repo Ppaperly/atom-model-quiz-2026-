@@ -84,10 +84,13 @@ async function renderResults(scope = "team") {
 function renderSubmissionCard(submission, adminMode) {
   const element = findElementByAtomicNumber(submission.elementNumber);
   const feedbackItems = state.feedback.filter((item) => item.submissionId === submission.id);
-  const reveal = adminMode || state.settings.answerRevealEnabled;
-  return `<article class="card stack"><div class="submission-meta"><span class="pill">${escapeHtml(submission.gradeName || "학년 미입력")}</span><span class="pill">${escapeHtml(submission.className)}</span><span class="pill">${escapeHtml(submission.teamName)}</span><span class="pill">${escapeHtml(submission.studentNumber)}번 ${escapeHtml(submission.studentName)}</span><span class="pill">${submission.questionIndex}번 문제</span></div><img class="submission-image" src="${submission.imageData}" alt="${escapeHtml(submission.studentName)} 학생 제출 이미지" />${renderAnswerSummary(submission, element)}${reveal ? renderCorrectAnswer(element) : `<p class="muted">정답 확인은 선생님이 열어주면 볼 수 있습니다.</p>`}<div><h3>피드백</h3><div class="feedback-list">${feedbackItems.length ? feedbackItems.map((item) => `<div class="feedback-item"><strong>${escapeHtml(item.fromStudentName)}</strong>: ${escapeHtml(item.message)}</div>`).join("") : `<p class="muted">아직 피드백이 없습니다.</p>`}</div>${state.profile && !adminMode ? `<form data-feedback-form="${submission.id}" class="stack"><textarea name="message" required placeholder="친구에게 도움이 되는 피드백을 적어주세요."></textarea><button type="submit">피드백 등록</button></form>` : ""}</div></article>`;
+  return `<article class="card stack"><div class="submission-meta"><span class="pill">${escapeHtml(submission.gradeName || "학년 미입력")}</span><span class="pill">${escapeHtml(submission.className)}</span><span class="pill">${escapeHtml(submission.teamName)}</span><span class="pill">${escapeHtml(submission.studentNumber)}번 ${escapeHtml(submission.studentName)}</span><span class="pill">${submission.questionIndex}번 문제</span></div><img class="submission-image" src="${submission.imageData}" alt="${escapeHtml(submission.studentName)} 학생 제출 이미지" />${renderAnswerSummary(submission, element, adminMode)}${adminMode && element ? renderCorrectAnswer(element) : ""}<div><h3>피드백</h3><div class="feedback-list">${feedbackItems.length ? feedbackItems.map((item) => `<div class="feedback-item"><strong>${escapeHtml(item.fromStudentName)}</strong>: ${escapeHtml(item.message)}</div>`).join("") : `<p class="muted">아직 피드백이 없습니다.</p>`}</div>${state.profile && !adminMode ? `<form data-feedback-form="${submission.id}" class="stack"><textarea name="message" required placeholder="친구에게 도움이 되는 피드백을 적어주세요."></textarea><button type="submit">피드백 등록</button></form>` : ""}</div></article>`;
 }
-function renderAnswerSummary(submission, element) { return `<div class="table-wrap"><table><tbody><tr><th>출제 원소</th><td>${element ? `${element.name} (${element.symbol})` : submission.elementNumber}</td></tr><tr><th>학생 입력</th><td>${Object.entries(submission.studentAnswers || {}).map(([key, value]) => `${FIELD_LABELS[key]}: ${escapeHtml(value)}`).join("<br>")}</td></tr></tbody></table></div>`; }
+function renderAnswerSummary(submission, element, adminMode) {
+  const studentAnswerRows = Object.entries(submission.studentAnswers || {}).map(([key, value]) => `${FIELD_LABELS[key]}: ${escapeHtml(value)}`).join("<br>");
+  const elementRow = adminMode ? `<tr><th>출제 원소</th><td>${element ? `${element.name} (${element.symbol})` : submission.elementNumber}</td></tr>` : "";
+  return `<div class="table-wrap"><table><tbody>${elementRow}<tr><th>학생 입력</th><td>${studentAnswerRows || "입력 답안 없음"}</td></tr></tbody></table></div>`;
+}
 function renderCorrectAnswer(element) { return `<div class="stack"><h3>정답 원자 모형</h3>${renderAtomSvg(element)}<div class="table-wrap"><table><tbody><tr><th>원소 번호</th><td>${element.atomicNumber}</td></tr><tr><th>이름(기호)</th><td>${element.name} (${element.symbol})</td></tr><tr><th>양성자 수</th><td>${element.protons}</td></tr><tr><th>중성자 수</th><td>${element.neutrons}</td></tr><tr><th>전자 수</th><td>${element.electrons}</td></tr></tbody></table></div></div>`; }
 
 async function handleFeedbackSubmit(event) {
@@ -120,7 +123,21 @@ async function renderAdminDashboard() {
   views.admin.querySelector("#answerToggle").addEventListener("change", handleSettingChange);
   views.admin.querySelector("#searchToggle").addEventListener("change", handleSettingChange);
   views.admin.querySelector("#adminFilter").addEventListener("input", renderAdminSubmissionList);
+  views.admin.querySelector("#adminSubmissionList").addEventListener("click", handleAdminSubmissionClick);
   renderAdminSubmissionList(); showView("admin");
 }
 async function handleSettingChange() { const nextSettings = { answerRevealEnabled: views.admin.querySelector("#answerToggle").checked, elementSearchEnabled: views.admin.querySelector("#searchToggle").checked }; try { await saveSettings(nextSettings); state.settings = nextSettings; scheduleAdminLogout(); showMessage("관리자 설정을 저장했습니다."); } catch (error) { showMessage(`설정 저장 실패: ${error.message}`, true); } }
-function renderAdminSubmissionList() { const keyword = clean(views.admin.querySelector("#adminFilter")?.value).toLowerCase(); const submissions = state.submissions.filter((item) => !keyword || `${item.gradeName || ""} ${item.className} ${item.teamName} ${item.studentNumber} ${item.studentName}`.toLowerCase().includes(keyword)); views.admin.querySelector("#adminSubmissionList").innerHTML = submissions.length ? submissions.map((item) => renderSubmissionCard(item, true)).join("") : `<p class="muted">조건에 맞는 제출물이 없습니다.</p>`; }
+function renderAdminSubmissionList() {
+  const keyword = clean(views.admin.querySelector("#adminFilter")?.value).toLowerCase();
+  const submissions = state.submissions.filter((item) => !keyword || `${item.gradeName || ""} ${item.className} ${item.teamName} ${item.studentNumber} ${item.studentName}`.toLowerCase().includes(keyword));
+  views.admin.querySelector("#adminSubmissionList").innerHTML = submissions.length ? `<div class="table-wrap"><table><thead><tr><th>학생</th><th>학년/반</th><th>조</th><th>문제</th></tr></thead><tbody>${submissions.map((item) => `<tr><td><button class="secondary-button" type="button" data-admin-submission="${escapeHtml(item.id)}">${escapeHtml(item.studentNumber)}번 ${escapeHtml(item.studentName)}</button></td><td>${escapeHtml(item.gradeName || "학년 미입력")} ${escapeHtml(item.className)}</td><td>${escapeHtml(item.teamName)}</td><td>${escapeHtml(item.questionIndex)}번</td></tr>`).join("")}</tbody></table></div><div id="adminSubmissionDetail" class="stack"></div>` : `<p class="muted">조건에 맞는 제출물이 없습니다.</p>`;
+}
+function handleAdminSubmissionClick(event) {
+  const button = event.target.closest("[data-admin-submission]");
+  if (!button) return;
+  const submission = state.submissions.find((item) => item.id === button.dataset.adminSubmission);
+  const detail = views.admin.querySelector("#adminSubmissionDetail");
+  if (!submission || !detail) return;
+  detail.innerHTML = renderSubmissionCard(submission, true);
+  scheduleAdminLogout();
+}
