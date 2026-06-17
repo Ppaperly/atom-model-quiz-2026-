@@ -115,7 +115,8 @@ async function renderAdminDashboard() {
   if (!isAdminUnlocked()) return;
   scheduleAdminLogout();
   await refreshSettings(); await refreshClassData();
-  views.admin.innerHTML = `<section class="panel stack"><div><h2>관리자 화면</h2><p class="muted">정답 확인과 원소 검색을 수업 단계에 맞게 열고 닫을 수 있습니다.</p></div><div class="grid"><label class="switch-row">정답 확인 허용 <input id="answerToggle" type="checkbox" ${state.settings.answerRevealEnabled ? "checked" : ""} /></label><label class="switch-row">원소 검색 허용 <input id="searchToggle" type="checkbox" ${state.settings.elementSearchEnabled ? "checked" : ""} /></label></div><div class="form-grid"><label>학년/반/조/학생 검색 <input id="adminFilter" placeholder="예: 1학년, 1반, 3조, 홍길동" /></label></div><div id="adminSubmissionList" class="result-grid"></div></section>`;
+  views.admin.innerHTML = `<section class="panel stack"><div><h2>관리자 화면</h2><p class="muted">정답 확인과 원소 검색을 수업 단계에 맞게 열고 닫을 수 있습니다.</p></div><div class="actions"><button id="adminHomeButton" class="secondary-button" type="button">홈으로 돌아가기</button></div><div class="grid"><label class="switch-row">정답 확인 허용 <input id="answerToggle" type="checkbox" ${state.settings.answerRevealEnabled ? "checked" : ""} /></label><label class="switch-row">원소 검색 허용 <input id="searchToggle" type="checkbox" ${state.settings.elementSearchEnabled ? "checked" : ""} /></label></div><div class="form-grid"><label>학년/반/조/학생 검색 <input id="adminFilter" placeholder="예: 1학년, 1반, 3조, 홍길동" /></label></div><div id="adminSubmissionList" class="result-grid"></div></section>`;
+  views.admin.querySelector("#adminHomeButton").addEventListener("click", renderStart);
   views.admin.querySelector("#answerToggle").addEventListener("change", handleSettingChange);
   views.admin.querySelector("#searchToggle").addEventListener("change", handleSettingChange);
   views.admin.querySelector("#adminFilter").addEventListener("input", renderAdminSubmissionList);
