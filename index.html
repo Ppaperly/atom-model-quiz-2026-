@@ -5,23 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>원자 모형 제작활동</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./feature-styles.css" />
   </head>
   <body>
     <main class="app-shell">
-      <header class="topbar">
-        <div>
-          <h1>원자 모형 제작활동</h1>
-        </div>
-        <button id="adminOpenButton" class="ghost-button" type="button">관리자</button>
-      </header>
-
+      <header class="topbar"><div><h1>원자 모형 제작활동</h1></div><button id="adminOpenButton" class="ghost-button" type="button">관리자</button></header>
       <section id="messageBox" class="message-box" aria-live="polite"></section>
       <section id="studentStartView" class="view active-view"></section>
       <section id="quizView" class="view"></section>
       <section id="resultsView" class="view"></section>
+      <section id="myAnswersView" class="view"></section>
       <section id="searchView" class="view"></section>
       <section id="adminView" class="view"></section>
     </main>
+    <div id="modalHost"></div>
     <script type="module" src="./src/app.js"></script>
   </body>
 </html>
