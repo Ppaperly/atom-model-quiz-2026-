@@ -1,0 +1,3 @@
+import test from "node:test";import assert from "node:assert/strict";import {createAdminPopupPage,groupParticipationRecords} from "../src/admin-view-model.js";
+test("keeps repeat participation separate",()=>{const records=groupParticipationRecords([{id:"1",sessionId:"a",questionIndex:1},{id:"2",sessionId:"a",questionIndex:2},{id:"3",sessionId:"b",questionIndex:1}]);assert.equal(records.length,2);assert.equal(records.find(item=>item.sessionId==="a").submissions.length,2);});
+test("popup excludes correct answer",()=>{const page=createAdminPopupPage({id:"1",imageData:"image"},[{submissionId:"1",message:"좋아요"}]);assert.equal(page.feedback.length,1);assert.equal("correctAnswer" in page,false);});

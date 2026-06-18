@@ -1,0 +1,2 @@
+import test from "node:test";import assert from "node:assert/strict";import {readFile} from "node:fs/promises";
+test("rules include administrator visibility edit and cancel protections",async()=>{const rules=await readFile("firestore.rules","utf8");assert.match(rules,/E2aywHHeSvbpcVW81AxcYIrubvE2/);assert.match(rules,/visibleToPeers/);assert.match(rules,/editAllowance == resource\.data\.editAllowance - 1/);assert.match(rules,/completedAt == null/);});

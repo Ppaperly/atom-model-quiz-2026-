@@ -1,327 +1,63 @@
 import { createQuestion, findElementByAtomicNumber, getSearchPool, pickQuizElements } from "./elements.js";
 import { renderAtomSvg } from "./atom-renderer.js";
-import { assertCompressedImageSize } from "./image-utils.js";
-import { completeSession, createSession, getSettings, listFeedback, listSubmissions, saveFeedback, saveSettings, saveSubmission } from "./firebase-service.js";
+import { compressDataUrl, compressImage } from "./image-utils.js";
+import { createDrawingCanvas } from "./drawing-canvas.js";
+import { createSubmissionState, getActiveResult, setSubmissionMode } from "./submission-editor.js";
+import { createAdminPopupPage, groupParticipationRecords } from "./admin-view-model.js";
+import { makeDownloadFilename } from "./auth-utils.js";
+import {
+  completeSession, createSession, deleteParticipation, ensureAnonymousStudent, getSettings,
+  grantSubmissionEdit, isCurrentUserAdmin, listFeedback, listSessions, listSessionSubmissions,
+  listSubmissions, migrateLegacyVisibility, replaceSubmissionResult, saveFeedback, saveSettings,
+  saveSubmission, setSessionPeerVisibility, signInAdmin, signOutAdmin
+} from "./firebase-service.js";
 
-const ADMIN_PASSWORD = "hy3932662";
-const ADMIN_SESSION_TIMEOUT_MS = 30 * 60 * 1000;
-let adminLogoutTimer = null;
-const FIELD_LABELS = { atomicNumber: "원소 번호", name: "이름", symbol: "기호", protons: "양성자 수", neutrons: "중성자 수", electrons: "전자 수" };
-const state = { profile: null, sessionId: null, questions: [], currentIndex: 0, settings: { answerRevealEnabled: false, elementSearchEnabled: false }, submissions: [], feedback: [] };
-const drawingState = { canvas: null, context: null, drawing: false, color: "#272338", width: 5, hasInk: false, pointers: new Map(), zoom: 1, panX: 0, panY: 0, lastGesture: null };
-const views = { start: document.querySelector("#studentStartView"), quiz: document.querySelector("#quizView"), results: document.querySelector("#resultsView"), search: document.querySelector("#searchView"), admin: document.querySelector("#adminView") };
-const messageBox = document.querySelector("#messageBox");
-document.querySelector("#adminOpenButton").addEventListener("click", () => { if (isAdminUnlocked()) { renderAdminDashboard(); return; } renderAdminLogin(); });
+const FIELD_LABELS = { atomicNumber:"원소 번호", name:"이름", symbol:"기호", protons:"양성자 수", neutrons:"중성자 수", electrons:"전자 수" };
+const state = { profile:null, sessionId:null, questions:[], currentIndex:0, settings:{answerRevealEnabled:false,elementSearchEnabled:false}, submissions:[], feedback:[], editor:null, drawing:null, sessions:[], adminRecords:[], adminRecord:null, adminPage:0, quizHistoryActive:false };
+const views = { start:document.querySelector("#studentStartView"), quiz:document.querySelector("#quizView"), results:document.querySelector("#resultsView"), myAnswers:document.querySelector("#myAnswersView"), search:document.querySelector("#searchView"), admin:document.querySelector("#adminView") };
+const messageBox=document.querySelector("#messageBox");
+const modalHost=document.querySelector("#modalHost");
+document.querySelector("#adminOpenButton").addEventListener("click",()=>isCurrentUserAdmin()?renderAdminDashboard():renderAdminLogin());
+window.addEventListener("popstate",handleBrowserBack);
+document.addEventListener("keydown",event=>{if(event.key==="Escape"&&modalHost.innerHTML)history.back();});
 init();
 
-async function init() { await refreshSettings(); renderStart(); }
-function showView(name) { Object.values(views).forEach((view) => view.classList.remove("active-view")); views[name].classList.add("active-view"); }
-function showMessage(message, isError = false) { messageBox.textContent = message; messageBox.classList.toggle("danger-text", isError); if (message) setTimeout(() => { if (messageBox.textContent === message) messageBox.textContent = ""; }, 4200); }
-async function refreshSettings() { try { state.settings = await getSettings(); } catch (error) { showMessage(`설정 불러오기 실패: ${error.message}`, true); } }
-function clean(value) { return String(value ?? "").trim(); }
-function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]); }
-function isAdminUnlocked() { const unlocked = localStorage.getItem("atomQuizAdminUnlocked") === "true"; const unlockedAt = Number(localStorage.getItem("atomQuizAdminUnlockedAt") || 0); if (!unlocked || !unlockedAt || Date.now() - unlockedAt > ADMIN_SESSION_TIMEOUT_MS) { logoutAdmin(); return false; } return true; }
-function unlockAdmin() { localStorage.setItem("atomQuizAdminUnlocked", "true"); localStorage.setItem("atomQuizAdminUnlockedAt", String(Date.now())); scheduleAdminLogout(); }
-function scheduleAdminLogout() { clearTimeout(adminLogoutTimer); adminLogoutTimer = setTimeout(logoutAdmin, ADMIN_SESSION_TIMEOUT_MS); }
-function logoutAdmin() { clearTimeout(adminLogoutTimer); localStorage.removeItem("atomQuizAdminUnlocked"); localStorage.removeItem("atomQuizAdminUnlockedAt"); if (views.admin.classList.contains("active-view")) { renderAdminLogin(); showMessage("관리자 접속 시간이 지나 자동 로그아웃되었습니다.", true); } }
+async function init(){try{await ensureAnonymousStudent();await refreshSettings();}catch(error){showMessage(`인증 준비 실패: ${error.message}`,true);}renderStart();}
+function showView(name){Object.values(views).forEach(view=>view.classList.remove("active-view"));views[name].classList.add("active-view");}
+function showMessage(message,isError=false){messageBox.textContent=message;messageBox.classList.toggle("danger-text",isError);if(message)setTimeout(()=>messageBox.textContent===message&&(messageBox.textContent=""),4200);}
+async function refreshSettings(){state.settings=await getSettings();}
+function clean(value){return String(value??"").trim();}
+function escapeHtml(value){return String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"})[char]);}
 
-function renderStart() {
-  views.start.innerHTML = `<section class="panel stack"><div><h2>학생 정보 입력</h2><p class="muted">학년, 반, 조, 번호, 이름을 입력한 뒤 시작하세요.</p></div><form id="startForm" class="stack"><div class="form-grid"><label>학년 <input name="gradeName" required placeholder="예: 1학년" /></label><label>반 <input name="className" required placeholder="예: 1반" /></label><label>조 <input name="teamName" required placeholder="예: 3조" /></label><label>번호 <input name="studentNumber" inputmode="numeric" required placeholder="예: 12" /></label><label>이름 <input name="studentName" required placeholder="예: 홍길동" /></label></div><div class="actions"><button type="submit">게임 시작</button>${state.settings.elementSearchEnabled ? `<button id="openSearchButton" class="secondary-button" type="button">원소 검색</button>` : ""}</div></form></section>`;
-  views.start.querySelector("#startForm").addEventListener("submit", handleStart);
-  views.start.querySelector("#openSearchButton")?.addEventListener("click", renderSearch);
-  showView("start");
-}
+function renderStart(){state.quizHistoryActive=false;views.start.innerHTML=`<section class="panel stack"><div><h2>학생 정보 입력</h2><p class="muted">학년, 반, 조, 번호, 이름을 입력한 뒤 시작하세요.</p></div><form id="startForm" class="stack"><div class="form-grid"><label>학년 <input name="gradeName" required placeholder="예: 1학년"></label><label>반 <input name="className" required placeholder="예: 1반"></label><label>조 <input name="teamName" required placeholder="예: 3조"></label><label>번호 <input name="studentNumber" inputmode="numeric" required placeholder="예: 12"></label><label>이름 <input name="studentName" required placeholder="예: 홍길동"></label></div><div class="actions"><button type="submit">게임 시작</button>${state.settings.elementSearchEnabled?`<button id="openSearchButton" class="secondary-button" type="button">원소 검색</button>`:""}</div></form></section>`;views.start.querySelector("#startForm").addEventListener("submit",handleStart);views.start.querySelector("#openSearchButton")?.addEventListener("click",renderSearch);showView("start");}
+async function handleStart(event){event.preventDefault();const data=new FormData(event.currentTarget);const profile=Object.fromEntries(["gradeName","className","teamName","studentNumber","studentName"].map(key=>[key,clean(data.get(key))]));if(Object.values(profile).some(value=>!value))return showMessage("학생 정보를 모두 입력해 주세요.",true);event.submitter.disabled=true;try{state.profile=profile;state.sessionId=await createSession(profile);state.questions=pickQuizElements(3).map(createQuestion);state.currentIndex=0;history.pushState({quiz:true},"");state.quizHistoryActive=true;renderQuiz();}catch(error){showMessage(`시작 실패: ${error.message}`,true);}finally{event.submitter.disabled=false;}}
+function renderQuiz(){const question=state.questions[state.currentIndex];state.editor=createSubmissionState();views.quiz.innerHTML=`<section class="panel stack"><div><p class="quiz-status">${state.currentIndex+1} / 3 문제</p><h2>제시된 정보를 보고 원자 모형을 그려보세요</h2></div><form id="quizForm" class="stack">${renderQuestionTable(question.element,question.blankFields)}${submissionEditorMarkup()}<div class="actions"><button type="submit">제출하고 다음으로</button></div></form></section>`;bindSubmissionEditor(views.quiz);views.quiz.querySelector("#quizForm").addEventListener("submit",handleQuestionSubmit);showView("quiz");}
+function renderQuestionTable(element,blankFields){return `<div class="table-wrap"><table><thead><tr><th>항목</th><th>정보</th></tr></thead><tbody>${Object.keys(FIELD_LABELS).map(field=>`<tr><th>${FIELD_LABELS[field]}</th><td>${blankFields.includes(field)?`<input name="${field}" required aria-label="${FIELD_LABELS[field]} 입력">`:escapeHtml(element[field])}</td></tr>`).join("")}</tbody></table></div>`;}
+function submissionEditorMarkup(existingImage=""){return `<div class="submission-mode" role="group" aria-label="제출 방식"><button data-mode="photo" class="secondary-button" type="button">사진 촬영/선택</button><button data-mode="canvas" type="button">캔버스에 그리기</button></div><section data-photo-panel hidden class="stack"><label>사진 촬영 또는 선택 <input data-photo-input type="file" accept="image/*"></label><img data-photo-preview class="preview-image" alt="선택한 사진 미리보기" ${existingImage?`src="${existingImage}"`:"hidden"}></section><section data-canvas-panel class="stack"><div class="drawing-toolbar"><button data-tool="black" type="button">검정</button><button data-tool="electron" class="secondary-button" type="button">전자</button><button data-tool="proton" class="secondary-button" type="button">양성자</button><button data-tool="neutron" class="secondary-button" type="button">중성자</button><button data-tool="eraser" class="secondary-button" type="button">지우개</button><button data-tool="pan" class="secondary-button" type="button">선택/이동</button><button data-fullscreen class="secondary-button" type="button">전체화면</button><button data-exit-fullscreen class="secondary-button" type="button">전체화면 닫기</button></div><div data-canvas-root class="drawing-viewport"></div></section>`;}
+function bindSubmissionEditor(container,initial={}){state.editor=createSubmissionState(initial);const photoPanel=container.querySelector("[data-photo-panel]");const canvasPanel=container.querySelector("[data-canvas-panel]");const modeButtons=container.querySelectorAll("[data-mode]");const selectMode=mode=>{setSubmissionMode(state.editor,mode);photoPanel.hidden=mode!=="photo";canvasPanel.hidden=mode!=="canvas";modeButtons.forEach(button=>button.classList.toggle("secondary-button",button.dataset.mode!==mode));};modeButtons.forEach(button=>button.addEventListener("click",()=>selectMode(button.dataset.mode)));container.querySelector("[data-photo-input]").addEventListener("change",async event=>{const file=event.currentTarget.files[0];if(!file)return;try{state.editor.photoData=await compressImage(file);const preview=container.querySelector("[data-photo-preview]");preview.src=state.editor.photoData;preview.hidden=false;}catch(error){showMessage(error.message,true);}});state.drawing=createDrawingCanvas(container.querySelector("[data-canvas-root]"),()=>{state.editor.canvasDirty=true;});container.querySelectorAll("[data-tool]").forEach(button=>button.addEventListener("click",()=>{state.drawing.setTool(button.dataset.tool);container.querySelectorAll("[data-tool]").forEach(item=>item.classList.toggle("secondary-button",item!==button));}));container.querySelector("[data-fullscreen]").addEventListener("click",()=>{state.drawing.enterFullscreen();container.querySelectorAll("[data-tool]").forEach(item=>item.classList.toggle("secondary-button",item.dataset.tool!=="pan"));});container.querySelector("[data-exit-fullscreen]").addEventListener("click",()=>state.drawing.exitFullscreen());selectMode(initial.mode||"canvas");}
+async function getEditorResult(){if(state.editor.mode==="canvas"){state.editor.canvasDirty=state.drawing.isDirty();if(state.editor.canvasDirty)state.editor.canvasData=await compressDataUrl(state.drawing.toDataUrl());}return getActiveResult(state.editor);}
+async function handleQuestionSubmit(event){event.preventDefault();const question=state.questions[state.currentIndex];const data=new FormData(event.currentTarget);const studentAnswers=Object.fromEntries(question.blankFields.map(field=>[field,clean(data.get(field))]));const button=event.submitter;button.disabled=true;try{const result=await getEditorResult();await saveSubmission({sessionId:state.sessionId,...state.profile,questionIndex:state.currentIndex+1,elementNumber:question.element.atomicNumber,blankFields:question.blankFields,studentAnswers,...result});state.currentIndex+=1;if(state.currentIndex<3)return renderQuiz();await completeSession(state.sessionId);state.quizHistoryActive=false;showMessage("3문제 제출이 완료되었습니다.");await renderResults("team");}catch(error){showMessage(error.message,true);}finally{button.disabled=false;}}
+async function handleBrowserBack(){if(modalHost.innerHTML)return closeAdminModal(false);if(!state.quizHistoryActive)return;history.pushState({quiz:true},"");if(!confirm("정말 취소하시겠습니까?"))return;try{await deleteParticipation(state.sessionId,{studentCancel:true});state.profile=null;state.sessionId=null;state.questions=[];state.quizHistoryActive=false;renderStart();}catch(error){showMessage(`취소 실패: ${error.message}`,true);}}
 
-async function handleStart(event) {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const profile = { gradeName: clean(form.get("gradeName")), className: clean(form.get("className")), teamName: clean(form.get("teamName")), studentNumber: clean(form.get("studentNumber")), studentName: clean(form.get("studentName")) };
-  if (Object.values(profile).some((value) => !value)) return showMessage("학생 정보를 모두 입력해 주세요.", true);
-  event.submitter.disabled = true;
-  try { state.profile = profile; state.sessionId = await createSession(profile); state.questions = pickQuizElements(3).map(createQuestion); state.currentIndex = 0; renderQuiz(); }
-  catch (error) { showMessage(`시작 실패: ${error.message}`, true); }
-  finally { event.submitter.disabled = false; }
-}
+async function refreshClassData(admin=false){const [submissions,sessions]=await Promise.all([listSubmissions({admin}),admin?listSessions():Promise.resolve([])]);state.submissions=submissions;state.sessions=sessions;state.feedback=await listFeedback(state.submissions.map(item=>item.id),{admin});}
+async function renderResults(scope="team"){await refreshSettings();await refreshClassData(false);const visible=scope==="team"?state.submissions.filter(item=>item.className===state.profile?.className&&item.teamName===state.profile?.teamName):state.submissions;views.results.innerHTML=`<section class="panel stack"><div><h2>${scope==="team"?"우리 조 결과":"전체 조 결과"}</h2><p class="muted">친구의 원자 모형을 보고 피드백을 남겨보세요.</p></div><div class="actions"><button id="myAnswersButton" type="button">내 답안 조회</button><button id="teamResultsButton" class="secondary-button" type="button">우리 조 결과</button><button id="allResultsButton" class="secondary-button" type="button">전체 조 결과</button></div><div class="result-grid">${visible.length?visible.map(renderSubmissionCard).join(""):`<p class="muted">아직 제출된 결과가 없습니다.</p>`}</div></section>`;views.results.querySelector("#myAnswersButton").addEventListener("click",renderMyAnswers);views.results.querySelector("#teamResultsButton").addEventListener("click",()=>renderResults("team"));views.results.querySelector("#allResultsButton").addEventListener("click",()=>renderResults("all"));views.results.querySelectorAll("[data-feedback-form]").forEach(form=>form.addEventListener("submit",handleFeedbackSubmit));showView("results");}
+function renderSubmissionCard(submission){const element=findElementByAtomicNumber(submission.elementNumber);const items=state.feedback.filter(item=>item.submissionId===submission.id);return `<article class="card stack"><div class="submission-meta"><span class="pill">${escapeHtml(submission.gradeName||"")}</span><span class="pill">${escapeHtml(submission.className)}</span><span class="pill">${escapeHtml(submission.teamName)}</span><span class="pill">${escapeHtml(submission.studentNumber)}번 ${escapeHtml(submission.studentName)}</span><span class="pill">${submission.questionIndex}번</span></div><img class="submission-image" src="${submission.imageData}" alt="${escapeHtml(submission.studentName)} 제출 이미지">${renderAnswerSummary(submission,element)}${state.settings.answerRevealEnabled?renderCorrectAnswer(element):`<p class="muted">정답 확인은 선생님이 열어주면 볼 수 있습니다.</p>`}<div><h3>피드백</h3><div class="feedback-list">${items.length?items.map(renderFeedback).join(""):`<p class="muted">아직 피드백이 없습니다.</p>`}</div><form data-feedback-form="${submission.id}" class="stack"><textarea name="message" required placeholder="친구에게 도움이 되는 피드백을 적어주세요."></textarea><button type="submit">피드백 등록</button></form></div></article>`;}
+function renderAnswerSummary(submission,element){return `<div class="table-wrap"><table><tbody><tr><th>출제 원소</th><td>${element?`${element.name} (${element.symbol})`:submission.elementNumber}</td></tr><tr><th>학생 입력</th><td>${Object.entries(submission.studentAnswers||{}).map(([key,value])=>`${FIELD_LABELS[key]}: ${escapeHtml(value)}`).join("<br>")}</td></tr></tbody></table></div>`;}
+function renderCorrectAnswer(element){return `<div class="stack"><h3>정답 원자 모형</h3>${renderAtomSvg(element)}</div>`;}
+function renderFeedback(item){return `<div class="feedback-item"><strong>${escapeHtml(item.fromStudentName)}</strong>: ${escapeHtml(item.message)}</div>`;}
+async function handleFeedbackSubmit(event){event.preventDefault();const form=event.currentTarget;try{await saveFeedback({submissionId:form.dataset.feedbackForm,sessionId:state.sessionId,fromClassName:state.profile.className,fromGradeName:state.profile.gradeName,fromTeamName:state.profile.teamName,fromStudentNumber:state.profile.studentNumber,fromStudentName:state.profile.studentName,message:clean(new FormData(form).get("message"))});await renderResults("all");}catch(error){showMessage(`피드백 저장 실패: ${error.message}`,true);}}
 
-function renderQuiz() {
-  const question = state.questions[state.currentIndex];
-  views.quiz.innerHTML = `<section class="panel stack"><div><p class="quiz-status">${state.currentIndex + 1} / ${state.questions.length} 문제</p><h2>제시된 정보를 보고 원자 모형을 그려보세요</h2></div><form id="quizForm" class="stack">${renderQuestionTable(question.element, question.blankFields)}<div class="drawing-panel stack"><div class="drawing-tools" aria-label="그리기 도구"><button class="tool-button active-tool" type="button" data-draw-color="#272338">검정</button><button class="tool-button" type="button" data-draw-color="#df6f92">전자</button><button class="tool-button" type="button" data-draw-color="#7fc4d8">양성자</button><button class="tool-button" type="button" data-draw-color="#d7c900">중성자</button><button class="tool-button secondary-button" type="button" data-eraser>지우개</button><label class="size-control">굵기 <input id="brushSize" type="range" min="2" max="18" value="5" /></label><button id="clearDrawingButton" class="secondary-button" type="button">전체 지우기</button><button id="fullscreenDrawingButton" class="secondary-button" type="button">전체화면</button></div><div class="drawing-board"><canvas id="drawingCanvas" class="drawing-canvas" width="900" height="900" aria-label="원자 모형 그림판"></canvas></div></div><div class="actions"><button type="submit">제출하고 다음으로</button></div></form></section>`;
-  initDrawingCanvas();
-  views.quiz.querySelector("#quizForm").addEventListener("submit", handleQuestionSubmit);
-  showView("quiz");
-}
+async function renderMyAnswers(){const submissions=(await listSessionSubmissions(state.sessionId)).sort((a,b)=>Number(a.questionIndex)-Number(b.questionIndex));views.myAnswers.innerHTML=`<section class="panel stack"><div><h2>내 제출 답안</h2><p class="muted">현재 참여에서 제출한 답안만 볼 수 있습니다.</p></div><div class="actions"><button id="refreshAllowanceButton" class="secondary-button" type="button">권한 새로고침</button><button id="backResultsButton" class="secondary-button" type="button">결과로 돌아가기</button></div><div class="result-grid">${submissions.map(item=>`<article class="card stack"><h3>${item.questionIndex}번 답안</h3><img class="submission-image" src="${item.imageData}" alt="내 ${item.questionIndex}번 답안"><p class="muted">${item.submissionType==="canvas"?"캔버스":"사진"} 제출 · 수정 가능 ${Number(item.editAllowance||0)}회</p>${Number(item.editAllowance||0)>0?`<button data-edit-answer="${item.id}" type="button">수정하기</button>`:""}</article>`).join("")}</div></section>`;views.myAnswers.querySelector("#refreshAllowanceButton").addEventListener("click",renderMyAnswers);views.myAnswers.querySelector("#backResultsButton").addEventListener("click",()=>renderResults("team"));views.myAnswers.querySelectorAll("[data-edit-answer]").forEach(button=>button.addEventListener("click",()=>renderAnswerEditor(submissions.find(item=>item.id===button.dataset.editAnswer))));showView("myAnswers");}
+function renderAnswerEditor(submission){views.myAnswers.innerHTML=`<section class="panel stack"><h2>${submission.questionIndex}번 답안 수정</h2><form id="answerEditForm" class="stack">${submissionEditorMarkup(submission.imageData)}<div class="actions"><button type="submit">수정 저장</button><button id="cancelEditButton" class="secondary-button" type="button">취소</button></div></form></section>`;bindSubmissionEditor(views.myAnswers,{mode:submission.submissionType||"photo",photoData:submission.submissionType!=="canvas"?submission.imageData:""});views.myAnswers.querySelector("#cancelEditButton").addEventListener("click",renderMyAnswers);views.myAnswers.querySelector("#answerEditForm").addEventListener("submit",async event=>{event.preventDefault();try{await replaceSubmissionResult(submission.id,await getEditorResult());showMessage("답안을 수정했습니다.");await renderMyAnswers();}catch(error){showMessage(error.message,true);}});showView("myAnswers");}
 
-function renderQuestionTable(element, blankFields) { return `<div class="table-wrap"><table><thead><tr><th>항목</th><th>정보</th></tr></thead><tbody>${["atomicNumber", "name", "symbol", "protons", "neutrons", "electrons"].map((field) => `<tr><th>${FIELD_LABELS[field]}</th><td>${blankFields.includes(field) ? `<input name="${field}" required aria-label="${FIELD_LABELS[field]} 입력" />` : escapeHtml(element[field])}</td></tr>`).join("")}</tbody></table></div>`; }
-function initDrawingCanvas() {
-  const canvas = views.quiz.querySelector("#drawingCanvas");
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  drawingState.canvas = canvas;
-  drawingState.context = context;
-  drawingState.drawing = false;
-  drawingState.color = "#272338";
-  drawingState.width = 5;
-  drawingState.hasInk = false;
-  drawingState.pointers = new Map();
-  drawingState.zoom = 1;
-  drawingState.panX = 0;
-  drawingState.panY = 0;
-  drawingState.lastGesture = null;
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.lineCap = "round";
-  context.lineJoin = "round";
-  context.imageSmoothingEnabled = true;
-  canvas.addEventListener("pointerdown", startDrawing);
-  canvas.addEventListener("pointermove", drawOnCanvas);
-  canvas.addEventListener("pointerup", stopDrawing);
-  canvas.addEventListener("pointercancel", stopDrawing);
-  canvas.addEventListener("pointerleave", stopDrawing);
-  views.quiz.querySelectorAll("[data-draw-color]").forEach((button) => button.addEventListener("click", () => setDrawingTool(button, button.dataset.drawColor, false)));
-  views.quiz.querySelector("[data-eraser]").addEventListener("click", (event) => setDrawingTool(event.currentTarget, "#fff", true));
-  views.quiz.querySelector("#brushSize").addEventListener("input", (event) => { drawingState.width = Number(event.currentTarget.value); });
-  views.quiz.querySelector("#clearDrawingButton").addEventListener("click", clearDrawing);
-  views.quiz.querySelector("#fullscreenDrawingButton").addEventListener("click", toggleDrawingFullscreen);
-  document.addEventListener("keydown", handleDrawingKeydown);
-  updateCanvasTransform();
-}
-function setDrawingTool(button, color, isEraser) {
-  drawingState.color = color;
-  drawingState.width = isEraser ? 22 : Number(views.quiz.querySelector("#brushSize").value);
-  views.quiz.querySelectorAll(".tool-button").forEach((item) => item.classList.remove("active-tool"));
-  button.classList.add("active-tool");
-}
-function canvasPoint(event) {
-  const rect = drawingState.canvas.getBoundingClientRect();
-  return { x: ((event.clientX - rect.left) / rect.width) * drawingState.canvas.width, y: ((event.clientY - rect.top) / rect.height) * drawingState.canvas.height };
-}
-function startDrawing(event) {
-  event.preventDefault();
-  drawingState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-  drawingState.canvas.setPointerCapture?.(event.pointerId);
-  if (drawingState.pointers.size > 1) {
-    drawingState.drawing = false;
-    drawingState.context.closePath();
-    drawingState.lastGesture = getGesture();
-    return;
-  }
-  const point = canvasPoint(event);
-  drawingState.context.beginPath();
-  drawingState.context.moveTo(point.x, point.y);
-  drawingState.drawing = true;
-}
-function drawOnCanvas(event) {
-  if (drawingState.pointers.has(event.pointerId)) drawingState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-  if (drawingState.pointers.size > 1) {
-    event.preventDefault();
-    updateZoomGesture();
-    return;
-  }
-  if (!drawingState.drawing) return;
-  event.preventDefault();
-  const point = canvasPoint(event);
-  drawingState.context.strokeStyle = drawingState.color;
-  drawingState.context.lineWidth = drawingState.width;
-  drawingState.context.lineTo(point.x, point.y);
-  drawingState.context.stroke();
-  if (drawingState.color !== "#fff") drawingState.hasInk = true;
-}
-function stopDrawing(event) {
-  if (event) {
-    drawingState.pointers.delete(event.pointerId);
-    drawingState.canvas.releasePointerCapture?.(event.pointerId);
-  }
-  if (drawingState.pointers.size < 2) drawingState.lastGesture = null;
-  if (!drawingState.drawing) return;
-  drawingState.context.closePath();
-  drawingState.drawing = false;
-}
-function clearDrawing() {
-  drawingState.context.fillStyle = "#fff";
-  drawingState.context.fillRect(0, 0, drawingState.canvas.width, drawingState.canvas.height);
-  drawingState.hasInk = false;
-}
-function toggleDrawingFullscreen() {
-  const panel = views.quiz.querySelector(".drawing-panel");
-  const button = views.quiz.querySelector("#fullscreenDrawingButton");
-  const isFullscreen = panel.classList.toggle("fullscreen-drawing");
-  button.textContent = isFullscreen ? "닫기" : "전체화면";
-  document.body.classList.toggle("drawing-fullscreen-open", isFullscreen);
-  resetDrawingView();
-}
-function handleDrawingKeydown(event) {
-  if (event.key !== "Escape") return;
-  const panel = views.quiz?.querySelector(".drawing-panel.fullscreen-drawing");
-  if (!panel) return;
-  panel.classList.remove("fullscreen-drawing");
-  views.quiz.querySelector("#fullscreenDrawingButton").textContent = "전체화면";
-  document.body.classList.remove("drawing-fullscreen-open");
-  resetDrawingView();
-}
-function resetDrawingView() {
-  drawingState.zoom = 1;
-  drawingState.panX = 0;
-  drawingState.panY = 0;
-  drawingState.lastGesture = null;
-  updateCanvasTransform();
-}
-function updateCanvasTransform() {
-  if (!drawingState.canvas) return;
-  drawingState.canvas.style.transform = `translate(${drawingState.panX}px, ${drawingState.panY}px) scale(${drawingState.zoom})`;
-}
-function getGesture() {
-  const points = [...drawingState.pointers.values()];
-  if (points.length < 2) return null;
-  const [first, second] = points;
-  return {
-    distance: Math.hypot(second.x - first.x, second.y - first.y),
-    centerX: (first.x + second.x) / 2,
-    centerY: (first.y + second.y) / 2,
-    zoom: drawingState.zoom,
-    panX: drawingState.panX,
-    panY: drawingState.panY
-  };
-}
-function updateZoomGesture() {
-  const gesture = getGesture();
-  if (!gesture) return;
-  if (!drawingState.lastGesture) {
-    drawingState.lastGesture = gesture;
-    return;
-  }
-  const nextZoom = Math.min(4, Math.max(1, drawingState.lastGesture.zoom * (gesture.distance / drawingState.lastGesture.distance)));
-  drawingState.zoom = nextZoom;
-  drawingState.panX = drawingState.lastGesture.panX + (gesture.centerX - drawingState.lastGesture.centerX);
-  drawingState.panY = drawingState.lastGesture.panY + (gesture.centerY - drawingState.lastGesture.centerY);
-  updateCanvasTransform();
-}
-function confirmPolishDrawing() {
-  return window.confirm("그림을 보기 좋게 다듬어드릴까요?\n내용은 바꾸지 않고 선과 표시만 정리합니다.");
-}
-function exportDrawingCanvas(polish) {
-  const source = drawingState.canvas;
-  const output = document.createElement("canvas");
-  output.width = source.width;
-  output.height = source.height;
-  const context = output.getContext("2d");
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, output.width, output.height);
-  context.drawImage(source, 0, 0);
-  if (polish) polishDrawingPixels(context, output.width, output.height);
-  const imageData = output.toDataURL("image/jpeg", 0.82);
-  assertCompressedImageSize(imageData);
-  return imageData;
-}
-function polishDrawingPixels(context, width, height) {
-  const image = context.getImageData(0, 0, width, height);
-  const data = image.data;
-  for (let index = 0; index < data.length; index += 4) {
-    const isWhite = data[index] > 245 && data[index + 1] > 245 && data[index + 2] > 245;
-    if (isWhite) continue;
-    data[index] = Math.max(0, Math.round(data[index] * 0.78));
-    data[index + 1] = Math.max(0, Math.round(data[index + 1] * 0.78));
-    data[index + 2] = Math.max(0, Math.round(data[index + 2] * 0.78));
-  }
-  context.putImageData(image, 0, 0);
-}
-async function handleQuestionSubmit(event) {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const question = state.questions[state.currentIndex];
-  const studentAnswers = {};
-  question.blankFields.forEach((field) => { studentAnswers[field] = clean(form.get(field)); });
-  if (Object.values(studentAnswers).some((value) => !value)) return showMessage("빈칸을 모두 입력해 주세요.", true);
-  if (!drawingState.hasInk) return showMessage("원자 모형을 그림판에 그려 주세요.", true);
-  event.submitter.disabled = true; event.submitter.textContent = "저장 중...";
-  try {
-    const imageData = exportDrawingCanvas(confirmPolishDrawing());
-    await saveSubmission({ sessionId: state.sessionId, ...state.profile, questionIndex: state.currentIndex + 1, elementNumber: question.element.atomicNumber, blankFields: question.blankFields, studentAnswers, imageData });
-    state.currentIndex += 1;
-    if (state.currentIndex < state.questions.length) renderQuiz(); else { await completeSession(state.sessionId); showMessage("3문제 제출이 완료되었습니다."); await renderResults("team"); }
-  } catch (error) { showMessage(error.message, true); }
-  finally { event.submitter.disabled = false; event.submitter.textContent = "제출하고 다음으로"; }
-}
+function renderAdminLogin(){views.admin.innerHTML=`<section class="panel stack"><h2>관리자 접속</h2><form id="adminLoginForm" class="stack"><label>Gmail 아이디 <span class="gmail-input"><input name="identifier" required><span>@gmail.com</span></span></label><label>비밀번호 <input name="password" type="password" required></label><div class="actions"><button type="submit">접속</button><button id="cancelAdminButton" class="secondary-button" type="button">취소</button></div></form></section>`;views.admin.querySelector("#adminLoginForm").addEventListener("submit",async event=>{event.preventDefault();const data=new FormData(event.currentTarget);try{await signInAdmin(data.get("identifier"),data.get("password"));await renderAdminDashboard();}catch(error){showMessage(`관리자 로그인 실패: ${error.message}`,true);}});views.admin.querySelector("#cancelAdminButton").addEventListener("click",renderStart);showView("admin");}
+async function renderAdminDashboard(){await migrateLegacyVisibility();await refreshSettings();await refreshClassData(true);state.adminRecords=groupParticipationRecords(state.submissions,state.sessions);views.admin.innerHTML=`<section class="panel stack"><div><h2>관리자 화면</h2><p class="muted">참여 기록을 선택하면 제출물을 한 문제씩 확인할 수 있습니다.</p></div><div class="actions"><button id="adminHomeButton" class="secondary-button" type="button">홈</button><button id="adminLogoutButton" class="secondary-button" type="button">로그아웃</button></div><div class="grid"><label class="switch-row">정답 확인 허용 <input id="answerToggle" type="checkbox" ${state.settings.answerRevealEnabled?"checked":""}></label><label class="switch-row">원소 검색 허용 <input id="searchToggle" type="checkbox" ${state.settings.elementSearchEnabled?"checked":""}></label></div><label>학생 검색 <input id="adminFilter" placeholder="학년, 반, 조, 번호, 이름"></label><div id="adminParticipationList" class="participant-list"></div></section>`;views.admin.querySelector("#adminHomeButton").addEventListener("click",renderStart);views.admin.querySelector("#adminLogoutButton").addEventListener("click",async()=>{await signOutAdmin();renderStart();});views.admin.querySelector("#answerToggle").addEventListener("change",handleSettingChange);views.admin.querySelector("#searchToggle").addEventListener("change",handleSettingChange);views.admin.querySelector("#adminFilter").addEventListener("input",renderAdminParticipationList);renderAdminParticipationList();showView("admin");}
+function renderAdminParticipationList(){const keyword=clean(views.admin.querySelector("#adminFilter")?.value).toLowerCase();const records=state.adminRecords.filter(record=>!keyword||`${record.gradeName} ${record.className} ${record.teamName} ${record.studentNumber} ${record.studentName}`.toLowerCase().includes(keyword));const root=views.admin.querySelector("#adminParticipationList");root.innerHTML=records.length?records.map(record=>`<article class="participant-row"><button data-open-session="${record.sessionId}" class="participant-main secondary-button" type="button"><strong>${escapeHtml(record.gradeName)} ${escapeHtml(record.className)} ${escapeHtml(record.teamName)} ${escapeHtml(record.studentNumber)}번 ${escapeHtml(record.studentName)}</strong><span>${record.submissions.length}개 제출 · ${record.visibleToPeers?"다른 학생 조회 가능":"다른 학생 조회 불가능"}</span></button><button data-toggle-session="${record.sessionId}" class="secondary-button" type="button">${record.visibleToPeers?"조회 불가능으로":"조회 가능으로"}</button><button data-delete-session="${record.sessionId}" class="danger-button" type="button">전체 삭제</button></article>`).join(""):`<p class="muted">조건에 맞는 참여 기록이 없습니다.</p>`;root.querySelectorAll("[data-open-session]").forEach(button=>button.addEventListener("click",()=>openAdminModal(button.dataset.openSession)));root.querySelectorAll("[data-toggle-session]").forEach(button=>button.addEventListener("click",async()=>{const record=state.adminRecords.find(item=>item.sessionId===button.dataset.toggleSession);await setSessionPeerVisibility(record.sessionId,!record.visibleToPeers);await renderAdminDashboard();}));root.querySelectorAll("[data-delete-session]").forEach(button=>button.addEventListener("click",async()=>{const record=state.adminRecords.find(item=>item.sessionId===button.dataset.deleteSession);const label=`${record.gradeName} ${record.className} ${record.studentNumber}번 ${record.studentName}`;if(!confirm(`${label} 학생의 참여 기록, 제출물, 피드백을 모두 삭제하시겠습니까?`))return;await deleteParticipation(record.sessionId);showMessage("학생 참여 기록을 모두 삭제했습니다.");await renderAdminDashboard();}));}
+async function handleSettingChange(){await saveSettings({answerRevealEnabled:views.admin.querySelector("#answerToggle").checked,elementSearchEnabled:views.admin.querySelector("#searchToggle").checked});showMessage("관리자 설정을 저장했습니다.");}
+function openAdminModal(sessionId){state.adminRecord=state.adminRecords.find(item=>item.sessionId===sessionId);if(!state.adminRecord.submissions.length){showMessage("아직 제출된 답안이 없습니다.",true);return;}state.adminPage=0;history.pushState({adminModal:true},"");renderAdminModal();}
+function renderAdminModal(){const submission=state.adminRecord.submissions[state.adminPage];const page=createAdminPopupPage(submission,state.feedback);modalHost.innerHTML=`<div class="modal-backdrop"><section class="answer-modal" role="dialog" aria-modal="true"><div class="modal-header"><div><span class="pill">${state.adminPage+1} / ${state.adminRecord.submissions.length}</span><h2>${escapeHtml(state.adminRecord.studentName)} · ${page.questionIndex}번 답안</h2></div><button data-close-modal class="secondary-button" type="button">닫기 ×</button></div><img class="submission-image" src="${page.imageData}" alt="학생 제출 결과물"><div><h3>피드백</h3><div class="feedback-list">${page.feedback.length?page.feedback.map(renderFeedback).join(""):`<p class="muted">피드백이 없습니다.</p>`}</div></div><p class="muted">남은 수정 권한: ${page.editAllowance}회</p><div class="actions"><button data-grant-edit type="button">수정 권한 1회 부여</button><button data-download class="secondary-button" type="button">그림 다운로드</button></div><div class="modal-nav"><button data-prev class="secondary-button" type="button" ${state.adminPage===0?"disabled":""}>← 이전</button><button data-next type="button" ${state.adminPage>=state.adminRecord.submissions.length-1?"disabled":""}>다음 →</button></div></section></div>`;document.body.classList.add("modal-open");modalHost.querySelector("[data-close-modal]").addEventListener("click",()=>history.back());modalHost.querySelector(".modal-backdrop").addEventListener("click",event=>event.target===event.currentTarget&&history.back());modalHost.querySelector("[data-prev]").addEventListener("click",()=>{state.adminPage-=1;renderAdminModal();});modalHost.querySelector("[data-next]").addEventListener("click",()=>{state.adminPage+=1;renderAdminModal();});modalHost.querySelector("[data-grant-edit]").addEventListener("click",async()=>{await grantSubmissionEdit(page.id);page.editAllowance+=1;state.adminRecord.submissions[state.adminPage].editAllowance=page.editAllowance;renderAdminModal();});modalHost.querySelector("[data-download]").addEventListener("click",()=>downloadSubmission(page));let swipeStart=null;const modal=modalHost.querySelector(".answer-modal");modal.addEventListener("pointerdown",event=>swipeStart=event.clientX);modal.addEventListener("pointerup",event=>{if(swipeStart==null)return;const distance=event.clientX-swipeStart;swipeStart=null;if(distance< -60&&state.adminPage<state.adminRecord.submissions.length-1){state.adminPage+=1;renderAdminModal();}else if(distance>60&&state.adminPage>0){state.adminPage-=1;renderAdminModal();}});}
+function closeAdminModal(useHistory=true){if(useHistory)return history.back();modalHost.innerHTML="";document.body.classList.remove("modal-open");state.adminRecord=null;}
+function downloadSubmission(submission){const link=document.createElement("a");link.href=submission.imageData;link.download=makeDownloadFilename(submission);document.body.append(link);link.click();link.remove();}
 
-async function refreshClassData() { try { [state.submissions, state.feedback] = await Promise.all([listSubmissions(), listFeedback()]); } catch (error) { showMessage(`결과 불러오기 실패: ${error.message}`, true); } }
-async function renderResults(scope = "team") {
-  await refreshSettings(); await refreshClassData();
-  const visible = scope === "team" ? state.submissions.filter((item) => item.className === state.profile?.className && item.teamName === state.profile?.teamName) : state.submissions;
-  views.results.innerHTML = `<section class="panel stack"><div><h2>${scope === "team" ? "우리 조 결과" : "전체 조 결과"}</h2><p class="muted">친구의 원자 모형을 보고 이름이 보이는 피드백을 남겨보세요.</p></div><div class="actions"><button id="teamResultsButton" class="secondary-button" type="button">우리 조 결과</button><button id="allResultsButton" class="secondary-button" type="button">전체 조 결과</button>${state.settings.elementSearchEnabled ? `<button id="searchFromResultsButton" class="secondary-button" type="button">원소 검색</button>` : ""}</div><div class="result-grid">${visible.length ? visible.map((item) => renderSubmissionCard(item, false)).join("") : `<p class="muted">아직 제출된 결과가 없습니다.</p>`}</div></section>`;
-  views.results.querySelector("#teamResultsButton").addEventListener("click", () => renderResults("team"));
-  views.results.querySelector("#allResultsButton").addEventListener("click", () => renderResults("all"));
-  views.results.querySelector("#searchFromResultsButton")?.addEventListener("click", renderSearch);
-  views.results.querySelectorAll("[data-feedback-form]").forEach((form) => form.addEventListener("submit", handleFeedbackSubmit));
-  showView("results");
-}
-
-function renderSubmissionCard(submission, adminMode) {
-  const element = findElementByAtomicNumber(submission.elementNumber);
-  const feedbackItems = state.feedback.filter((item) => item.submissionId === submission.id);
-  return `<article class="card stack"><div class="submission-meta"><span class="pill">${escapeHtml(submission.gradeName || "학년 미입력")}</span><span class="pill">${escapeHtml(submission.className)}</span><span class="pill">${escapeHtml(submission.teamName)}</span><span class="pill">${escapeHtml(submission.studentNumber)}번 ${escapeHtml(submission.studentName)}</span><span class="pill">${submission.questionIndex}번 문제</span></div><img class="submission-image" src="${submission.imageData}" alt="${escapeHtml(submission.studentName)} 학생 제출 이미지" />${renderAnswerSummary(submission, element, adminMode)}${adminMode && element ? renderCorrectAnswer(element) : ""}<div><h3>피드백</h3><div class="feedback-list">${feedbackItems.length ? feedbackItems.map((item) => `<div class="feedback-item"><strong>${escapeHtml(item.fromStudentName)}</strong>: ${escapeHtml(item.message)}</div>`).join("") : `<p class="muted">아직 피드백이 없습니다.</p>`}</div>${state.profile && !adminMode ? `<form data-feedback-form="${submission.id}" class="stack"><textarea name="message" required placeholder="친구에게 도움이 되는 피드백을 적어주세요."></textarea><button type="submit">피드백 등록</button></form>` : ""}</div></article>`;
-}
-function renderAnswerSummary(submission, element, adminMode) {
-  const studentAnswerRows = Object.entries(submission.studentAnswers || {}).map(([key, value]) => `${FIELD_LABELS[key]}: ${escapeHtml(value)}`).join("<br>");
-  const elementRow = adminMode ? `<tr><th>출제 원소</th><td>${element ? `${element.name} (${element.symbol})` : submission.elementNumber}</td></tr>` : "";
-  return `<div class="table-wrap"><table><tbody>${elementRow}<tr><th>학생 입력</th><td>${studentAnswerRows || "입력 답안 없음"}</td></tr></tbody></table></div>`;
-}
-function renderCorrectAnswer(element) { return `<div class="stack"><h3>정답 원자 모형</h3>${renderAtomSvg(element)}<div class="table-wrap"><table><tbody><tr><th>원소 번호</th><td>${element.atomicNumber}</td></tr><tr><th>이름(기호)</th><td>${element.name} (${element.symbol})</td></tr><tr><th>양성자 수</th><td>${element.protons}</td></tr><tr><th>중성자 수</th><td>${element.neutrons}</td></tr><tr><th>전자 수</th><td>${element.electrons}</td></tr></tbody></table></div></div>`; }
-
-async function handleFeedbackSubmit(event) {
-  event.preventDefault();
-  const message = clean(new FormData(event.currentTarget).get("message"));
-  if (!message) return;
-  event.submitter.disabled = true;
-  try { await saveFeedback({ submissionId: event.currentTarget.dataset.feedbackForm, fromGradeName: state.profile.gradeName, fromClassName: state.profile.className, fromTeamName: state.profile.teamName, fromStudentNumber: state.profile.studentNumber, fromStudentName: state.profile.studentName, message }); showMessage("피드백을 등록했습니다."); await renderResults("all"); }
-  catch (error) { showMessage(`피드백 저장 실패: ${error.message}`, true); }
-  finally { event.submitter.disabled = false; }
-}
-
-function renderSearch() {
-  if (!state.settings.elementSearchEnabled) return showMessage("원소 검색은 선생님이 열어주면 사용할 수 있습니다.", true);
-  views.search.innerHTML = `<section class="panel stack"><div><h2>원소 검색</h2><p class="muted">1번부터 20번까지 원소 번호, 이름, 기호로 검색할 수 있습니다.</p></div><label>검색어 <input id="elementSearchInput" placeholder="예: 산소, O, 8" /></label><div id="searchResults" class="result-grid"></div><div class="actions"><button id="backToStartButton" class="secondary-button" type="button">돌아가기</button></div></section>`;
-  const input = views.search.querySelector("#elementSearchInput"); input.addEventListener("input", () => renderSearchResults(input.value));
-  views.search.querySelector("#backToStartButton").addEventListener("click", () => state.profile ? renderResults("team") : renderStart());
-  renderSearchResults(""); showView("search");
-}
-function renderSearchResults(keyword) { const normalized = clean(keyword).toLowerCase(); const results = getSearchPool().filter((element) => !normalized || String(element.atomicNumber).includes(normalized) || element.name.toLowerCase().includes(normalized) || element.symbol.toLowerCase().includes(normalized)); views.search.querySelector("#searchResults").innerHTML = results.map((element) => `<article class="card stack">${renderCorrectAnswer(element)}</article>`).join(""); }
-
-function renderAdminLogin() { views.admin.innerHTML = `<section class="panel stack"><h2>관리자 접속</h2><form id="adminLoginForm" class="stack"><label>비밀번호 <input name="password" type="password" required /></label><div class="actions"><button type="submit">접속</button><button id="cancelAdminButton" class="secondary-button" type="button">취소</button></div></form></section>`; views.admin.querySelector("#adminLoginForm").addEventListener("submit", handleAdminLogin); views.admin.querySelector("#cancelAdminButton").addEventListener("click", renderStart); showView("admin"); }
-async function handleAdminLogin(event) { event.preventDefault(); if (new FormData(event.currentTarget).get("password") !== ADMIN_PASSWORD) return showMessage("관리자 비밀번호가 맞지 않습니다.", true); unlockAdmin(); await renderAdminDashboard(); }
-async function renderAdminDashboard() {
-  if (!isAdminUnlocked()) return;
-  scheduleAdminLogout();
-  await refreshSettings(); await refreshClassData();
-  views.admin.innerHTML = `<section class="panel stack"><div><h2>관리자 화면</h2><p class="muted">정답 확인과 원소 검색을 수업 단계에 맞게 열고 닫을 수 있습니다.</p></div><div class="actions"><button id="adminHomeButton" class="secondary-button" type="button">홈으로 돌아가기</button></div><div class="grid"><label class="switch-row">정답 확인 허용 <input id="answerToggle" type="checkbox" ${state.settings.answerRevealEnabled ? "checked" : ""} /></label><label class="switch-row">원소 검색 허용 <input id="searchToggle" type="checkbox" ${state.settings.elementSearchEnabled ? "checked" : ""} /></label></div><div class="form-grid"><label>학년/반/조/학생 검색 <input id="adminFilter" placeholder="예: 1학년, 1반, 3조, 홍길동" /></label></div><div id="adminSubmissionList" class="result-grid"></div></section>`;
-  views.admin.querySelector("#adminHomeButton").addEventListener("click", renderStart);
-  views.admin.querySelector("#answerToggle").addEventListener("change", handleSettingChange);
-  views.admin.querySelector("#searchToggle").addEventListener("change", handleSettingChange);
-  views.admin.querySelector("#adminFilter").addEventListener("input", renderAdminSubmissionList);
-  views.admin.querySelector("#adminSubmissionList").addEventListener("click", handleAdminSubmissionClick);
-  renderAdminSubmissionList(); showView("admin");
-}
-async function handleSettingChange() { const nextSettings = { answerRevealEnabled: views.admin.querySelector("#answerToggle").checked, elementSearchEnabled: views.admin.querySelector("#searchToggle").checked }; try { await saveSettings(nextSettings); state.settings = nextSettings; scheduleAdminLogout(); showMessage("관리자 설정을 저장했습니다."); } catch (error) { showMessage(`설정 저장 실패: ${error.message}`, true); } }
-function renderAdminSubmissionList() {
-  const keyword = clean(views.admin.querySelector("#adminFilter")?.value).toLowerCase();
-  const submissions = state.submissions.filter((item) => !keyword || `${item.gradeName || ""} ${item.className} ${item.teamName} ${item.studentNumber} ${item.studentName}`.toLowerCase().includes(keyword));
-  const students = groupSubmissionsByStudent(submissions);
-  views.admin.querySelector("#adminSubmissionList").innerHTML = students.length ? `<div class="student-name-list">${students.map((student) => `<button class="student-name-button secondary-button" type="button" data-admin-student="${escapeHtml(student.key)}">${escapeHtml(student.name)}</button>`).join("")}</div><div id="adminSubmissionDetail" class="stack"></div>` : `<p class="muted">조건에 맞는 제출물이 없습니다.</p>`;
-}
-function groupSubmissionsByStudent(submissions) {
-  const groups = new Map();
-  submissions.forEach((item) => {
-    const key = [item.gradeName || "", item.className || "", item.teamName || "", item.studentNumber || "", item.studentName || ""].join("|");
-    if (!groups.has(key)) {
-      groups.set(key, { key, name: item.studentName || "이름 미입력", submissions: [] });
-    }
-    groups.get(key).submissions.push(item);
-  });
-  return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name, "ko"));
-}
-function handleAdminSubmissionClick(event) {
-  const button = event.target.closest("[data-admin-student]");
-  if (!button) return;
-  const studentSubmissions = groupSubmissionsByStudent(state.submissions).find((item) => item.key === button.dataset.adminStudent)?.submissions || [];
-  const detail = views.admin.querySelector("#adminSubmissionDetail");
-  if (!studentSubmissions.length || !detail) return;
-  detail.innerHTML = `<div class="stack">${studentSubmissions.sort((a, b) => Number(a.questionIndex) - Number(b.questionIndex)).map((submission) => renderSubmissionCard(submission, true)).join("")}</div>`;
-  scheduleAdminLogout();
-}
+function renderSearch(){if(!state.settings.elementSearchEnabled)return showMessage("원소 검색은 선생님이 열어주면 사용할 수 있습니다.",true);views.search.innerHTML=`<section class="panel stack"><h2>원소 검색</h2><label>검색어 <input id="elementSearchInput" placeholder="예: 산소, O, 8"></label><div id="searchResults" class="result-grid"></div><button id="backToStartButton" class="secondary-button" type="button">돌아가기</button></section>`;const input=views.search.querySelector("#elementSearchInput");input.addEventListener("input",()=>renderSearchResults(input.value));views.search.querySelector("#backToStartButton").addEventListener("click",()=>state.profile?renderResults("team"):renderStart());renderSearchResults("");showView("search");}
+function renderSearchResults(keyword){const value=clean(keyword).toLowerCase();const results=getSearchPool().filter(element=>!value||String(element.atomicNumber).includes(value)||element.name.toLowerCase().includes(value)||element.symbol.toLowerCase().includes(value));views.search.querySelector("#searchResults").innerHTML=results.map(element=>`<article class="card">${renderCorrectAnswer(element)}</article>`).join("");}

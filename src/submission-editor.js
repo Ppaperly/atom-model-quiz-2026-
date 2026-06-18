@@ -1,0 +1,3 @@
+export function createSubmissionState(initial={}){return {mode:initial.mode==="photo"?"photo":"canvas",photoData:initial.photoData||"",canvasData:initial.canvasData||"",canvasDirty:Boolean(initial.canvasDirty)};}
+export function setSubmissionMode(state,mode){if(!["photo","canvas"].includes(mode))throw new Error("제출 방식을 확인해 주세요.");state.mode=mode;}
+export function getActiveResult(state){if(state.mode==="photo"){if(!state.photoData)throw new Error("사진을 촬영하거나 선택해 주세요.");return {submissionType:"photo",imageData:state.photoData};}if(!state.canvasDirty||!state.canvasData)throw new Error("캔버스에 그림을 그려 주세요.");return {submissionType:"canvas",imageData:state.canvasData};}
