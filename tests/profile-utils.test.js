@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {formatStudentCardLabel,formatStudentNumber,normalizeStudentProfile} from "../src/profile-utils.js";
+import {formatStudentCardLabel,formatStudentNumber,normalizeLegacyProfileForDisplay,normalizeStudentProfile} from "../src/profile-utils.js";
 
 test("normalizes spacing, unit typos, and leading zeroes",()=>{
   assert.deepEqual(normalizeStudentProfile({
@@ -37,4 +37,36 @@ test("formats old and normalized student numbers consistently",()=>{
   assert.equal(formatStudentNumber("1"),"1번");
   assert.equal(formatStudentNumber("01번"),"1번");
   assert.equal(formatStudentNumber(""),"");
+});
+
+test("normalizes legacy profile fields for administrator display",()=>{
+  assert.deepEqual(normalizeLegacyProfileForDisplay({
+    gradeName:" 01 학녀 ",
+    className:" 003 바 ",
+    teamName:" 02 조오 ",
+    studentNumber:" 004 ",
+    studentName:" 홍길동 "
+  }),{
+    gradeName:"1학년",
+    className:"3반",
+    teamName:"2조",
+    studentNumber:"4번",
+    studentName:"홍길동"
+  });
+});
+
+test("keeps unrecognized legacy fields instead of rejecting the record",()=>{
+  assert.deepEqual(normalizeLegacyProfileForDisplay({
+    gradeName:"고학년",
+    className:"무지개반",
+    teamName:"파랑조",
+    studentNumber:"미정",
+    studentName:" 김철수 "
+  }),{
+    gradeName:"고학년",
+    className:"무지개반",
+    teamName:"파랑조",
+    studentNumber:"미정",
+    studentName:"김철수"
+  });
 });
